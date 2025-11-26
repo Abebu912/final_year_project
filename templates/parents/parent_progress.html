@@ -1,0 +1,32 @@
+{% extends 'base.html' %}
+
+{% block title %}Progress Overview - SIMS{% endblock %}
+
+{% block content %}
+<div class="container">
+    <h1>Monitor Progress</h1>
+    {% if progress %}
+    <div class="row">
+        {% for p in progress %}
+        <div class="col-md-6">
+            <div class="card mb-3">
+                <div class="card-body">
+                    <h5 class="card-title">{{ p.student.get_full_name }} <small class="text-muted">({{ p.relationship }})</small></h5>
+                    <p>Grades recorded: {{ p.grades_count }}</p>
+                    {% if p.avg_score %}
+                    <p>Average score: {{ p.avg_score|floatformat:2 }}</p>
+                    {% else %}
+                    <p>No numeric scores available.</p>
+                    {% endif %}
+                    <a href="{% url 'child_grades' p.student.id %}" class="btn btn-sm btn-outline-primary">View Grades</a>
+                    <a href="{% url 'child_ranks' p.student.id %}" class="btn btn-sm btn-outline-secondary">View Ranks</a>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <p>No progress data available.</p>
+    {% endif %}
+</div>
+{% endblock %}

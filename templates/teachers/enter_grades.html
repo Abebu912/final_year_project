@@ -1,0 +1,92 @@
+{% extends 'base.html' %}
+{% block title %}Enter Grades{% endblock %}
+{% block content %}
+<div class="container py-4">
+  <h2>Enter Scores</h2>
+  <form method="get" class="mb-3">
+    <label for="subject">Select subject:</label>
+    <select id="subject" name="subject_id" onchange="this.form.submit()">
+      <option value="">--Select--</option>
+      {% for c in teacher_subjects %}
+      <option value="{{ c.id }}" {% if selected_subject and selected_subject.id == c.id %}selected{% endif %}>{{ c.code }} - {{ c.name }}</option>
+      {% endfor %}
+    </select>
+  </form>
+
+  {% if selected_subject %}
+  <h4>Entering scores for {{ selected_subject.name }}</h4>
+  <form method="post">
+    {% csrf_token %}
+    <table class="table">
+      <thead><tr><th>Student</th><th>Score (0-100)</th><th>Result / Remarks</th><th>Action</th></tr></thead>
+      <tbody>
+        {% for en in enrollments %}
+        <tr id="row-{{ en.student.id }}">
+          <td>{{ en.student.get_full_name }}</td>
+          <td>
+            <input type="number" min="0" max="100" class="form-control" id="score-{{ en.student.id }}" name="grade_{{ en.student.id }}" value="{{ en.current_score|default_if_none:'' }}">
+          </td>
+          <td>
+            <input type="text" class="form-control" id="result-{{ en.student.id }}" name="result_{{ en.student.id }}" value="{{ en.result|default_if_none:'' }}" placeholder="Optional remark/result">
+            <div class="small text-success mt-1" id="status-{{ en.student.id }}" style="display:none;"></div>
+          </td>
+          <td>
+            <button type="button" class="btn btn-sm btn-outline-primary save-row" data-student-id="{{ en.student.id }}" data-subject-id="{{ selected_subject.id }}">Save</button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <button class="btn btn-primary" type="submit">Save Scores</button>
+  </form>
+  <script>
+    // get CSRF token from cookie
+    function getCookie(name) {
+      let v = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+      return v ? v.pop() : '';
+    }
+
+    document.querySelectorAll('.save-row').forEach(function(btn){
+      btn.addEventListener('click', function(){
+        const studentId = this.dataset.studentId;
+        const subjectId = this.dataset.subjectId;
+        const scoreEl = document.getElementById('score-' + studentId);
+        const resultEl = document.getElementById('result-' + studentId);
+        const statusEl = document.getElementById('status-' + studentId);
+
+        const formData = new FormData();
+        formData.append('student_id', studentId);
+        formData.append('subject_id', subjectId);
+        formData.append('score', scoreEl.value);
+        formData.append('result', resultEl.value);
+
+        statusEl.style.display = 'block';
+        statusEl.textContent = 'Saving...';
+
+        fetch('{% url "save_student_score" %}', {
+          method: 'POST',
+          headers: { 'X-CSRFToken': getCookie('csrftoken') },
+          body: formData
+        }).then(r => r.json()).then(data => {
+          if (data.success) {
+            statusEl.classList.remove('text-danger');
+            statusEl.classList.add('text-success');
+            statusEl.textContent = 'Saved';
+          } else {
+            statusEl.classList.remove('text-success');
+            statusEl.classList.add('text-danger');
+            statusEl.textContent = data.message || 'Error';
+          }
+        }).catch(err => {
+          statusEl.classList.remove('text-success');
+          statusEl.classList.add('text-danger');
+          statusEl.textContent = 'Network error';
+        });
+      });
+    });
+  </script>
+  {% else %}
+    <p>Please select a subject to enter scores.</p>
+  {% endif %}
+</div>
+{% endblock %}

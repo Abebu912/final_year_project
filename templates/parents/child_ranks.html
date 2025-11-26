@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>Child Ranks</title>
+</head>
+<body>
+    <h1>Ranks for {{ child.get_full_name|default:child.username }}</h1>
+    <p>Relationship: {{ relationship }}</p>
+
+    {% if ranks %}
+    <ul>
+        {% for r in ranks %}
+        <li>{{ r.subject.title }} — Score: {{ r.score }} — Rank: {{ r.grade|default:'N/A' }}</li>
+        {% endfor %}
+    </ul>
+    <p><strong>GPA:</strong> {{ gpa }}</p>
+    {% else %}
+    <p>No ranks to show for this student.</p>
+    {% endif %}
+</body>
+</html>

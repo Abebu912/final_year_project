@@ -1,0 +1,96 @@
+{% extends 'base.html' %}
+{% block title %}Teacher Dashboard{% endblock %}
+{% block content %}
+<div class="container py-4">
+  <h2>Teacher Dashboard</h2>
+  <p>Total students across your subjects: {{ total_students }}</p>
+  <p>Pending scores: {{ pending_scores }}</p>
+  <p>Distinct students across your subjects: {{ distinct_student_count }}</p>
+  <!-- Bulk assign form -->
+  <div class="card mb-3">
+    <div class="card-body">
+      <h5 class="card-title">Bulk Assign Subjects</h5>
+      <form method="post" action="{% url 'assign_subjects_for_term' %}" class="row g-2">
+        {% csrf_token %}
+        <div class="col-auto">
+          <input type="number" name="grade_level" class="form-control" placeholder="Grade level (1-12)" min="1" max="12" required>
+        </div>
+        <div class="col-auto">
+          <input type="text" name="academic_year" class="form-control" placeholder="Academic year (e.g. 2025-2026)" required>
+        </div>
+        <div class="col-auto">
+          <select name="semester" class="form-select" required>
+            <option value="first">First</option>
+            <option value="second">Second</option>
+          </select>
+        </div>
+        <div class="col-auto">
+          <button type="submit" class="btn btn-sm btn-success">Assign Unassigned Subjects</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  <h4>Your Subjects</h4>
+  <div class="list-group mb-3">
+    {% for c in teacher_subjects %}
+      <div class="list-group-item d-flex justify-content-between align-items-center">
+        <div>
+          <strong>{{ c.code }}</strong> - {{ c.name }}
+          <div class="text-muted small">Students: {{ c.student_count|default:0 }}{% if c.pending_count %} • Pending: {{ c.pending_count }}{% endif %} • Sessions/week: {{ c.sessions_per_week|default:3 }}</div>
+        </div>
+        <div>
+          <a href="{% url 'enter_grades' %}?subject_id={{ c.id }}" class="btn btn-sm btn-primary me-1">Enter Scores</a>
+          <a href="{% url 'class_rosters' %}?subject_id={{ c.id }}" class="btn btn-sm btn-secondary me-1">Rosters</a>
+          <a href="{% url 'performance_reports' %}?subject_id={{ c.id }}" class="btn btn-sm btn-info me-1">Reports</a>
+          <a href="{% url 'bulk_grade_upload' c.id %}" class="btn btn-sm btn-outline-dark">Bulk Upload</a>
+        </div>
+      </div>
+    {% empty %}
+      <div class="list-group-item">No active subjects assigned.</div>
+    {% endfor %}
+  </div>
+  
+  <h4 class="mt-4">Available Subjects to Claim</h4>
+  <div class="list-group mb-3">
+    {% for c in available_subjects %}
+      <div class="list-group-item d-flex justify-content-between align-items-center">
+        <div>
+          <strong>{{ c.code }}</strong> - {{ c.name }}
+          <div class="text-muted small">Students: {{ c.student_count|default:0 }}</div>
+        </div>
+        <div>
+          <form method="post" action="{% url 'claim_subject' c.id %}" class="d-inline">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-sm btn-outline-primary">Claim</button>
+          </form>
+        </div>
+      </div>
+    {% empty %}
+      <div class="list-group-item">No unassigned subjects available.</div>
+    {% endfor %}
+  </div>
+
+  <h4 class="mt-4">Students Overview</h4>
+  <div class="card mb-3">
+    <div class="card-body">
+      <h5 class="card-title">Averages & Ranks</h5>
+      {% if student_ranking %}
+        <table class="table table-sm">
+          <thead><tr><th>Rank</th><th>Student</th><th>Average</th></tr></thead>
+          <tbody>
+            {% for s in student_ranking %}
+              <tr>
+                <td>{% if s.rank %}{{ s.rank }}{% else %}-{% endif %}</td>
+                <td>{{ s.student.get_full_name }}</td>
+                <td>{% if s.avg is not None %}{{ s.avg }} / 100{% else %}-{% endif %}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <p>No student scores available yet.</p>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

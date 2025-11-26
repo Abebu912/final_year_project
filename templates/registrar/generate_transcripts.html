@@ -1,0 +1,58 @@
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}Generate Transcripts - SIMS{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+  <h3>Generate Transcripts</h3>
+
+  <form method="GET" class="row g-3 mb-4">
+    <div class="col-md-6">
+      <label for="student_id" class="form-label">Select Student</label>
+      <select id="student_id" name="student_id" class="form-select">
+        <option value="">-- Select student --</option>
+        {% for s in students %}
+          <option value="{{ s.id }}" {% if selected_student and selected_student.id == s.id %}selected{% endif %}>
+            {{ s.get_full_name|default:s.username }} ({{ s.studentprofile.student_id|default:'-' }})
+          </option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-md-2 d-flex align-items-end">
+      <button type="submit" class="btn btn-primary">Show</button>
+    </div>
+    <div class="col-md-4 d-flex align-items-end">
+      {% if selected_student %}
+        <a href="?student_id={{ selected_student.id }}&format=pdf" class="btn btn-danger me-2">Download PDF</a>
+        <a href="?student_id={{ selected_student.id }}&format=csv" class="btn btn-secondary">Download CSV</a>
+      {% endif %}
+    </div>
+  </form>
+
+  {% if grades %}
+    <div class="card">
+      <div class="card-body">
+          <h5>Ranks for {{ selected_student.get_full_name|default:selected_student.username }}</h5>
+        <table class="table table-striped">
+          <thead>
+            <tr><th>Course</th><th>Code</th><th>Credits</th><th>Grade</th></tr>
+          </thead>
+          <tbody>
+            {% for g in grades %}
+              <tr>
+                <td>{{ g.subject.name }}</td>
+                <td>{{ g.subject.code }}</td>
+                <td>{{ g.subject.credit_hours }}</td>
+                <td>{{ g.grade }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  {% else %}
+    <div class="text-muted">No grades to show for the selected student.</div>
+  {% endif %}
+</div>
+{% endblock %}
