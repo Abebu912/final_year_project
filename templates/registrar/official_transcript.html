@@ -4,7 +4,6 @@
 <div class="container py-4">
   <h2>Official Transcript</h2>
   <p><strong>{{ student.get_full_name }}</strong> • Student ID: {{ student.studentprofile.student_id }}</p>
-  <p><strong>Result Average:</strong> {{ numeric_average|default:'N/A' }} / 100 • <strong>Class Rank:</strong> {{ student_rank|default:'N/A' }}</p>
 
   {% if transcripts_by_year %}
     {% for period, enrolls in transcripts_by_year.items %}
@@ -16,8 +15,6 @@
             <tr>
               <th>Subject</th>
               <th class="text-center">Result (out of 100)</th>
-              <th class="text-center">Letter Grade</th>
-              <th class="text-center">Rank</th>
             </tr>
             </thead>
             <tbody>
@@ -26,28 +23,9 @@
                 <td>{{ e.subject.name }}</td>
                 <td class="text-center">
                   {% if e.numeric_score is not None %}
-                    {{ e.numeric_score }}
+                    {{ e.numeric_score|floatformat:0 }}
                   {% else %}
                     N/A
-                  {% endif %}
-                </td>
-                <td class="text-center">
-                  {% if e.letter_grade %}
-                    {{ e.letter_grade }}
-                  {% else %}
-                    {% if e.numeric_score is not None %}
-                      {# derive letter from numeric #}
-                      {% if e.numeric_score >= 90 %}A{% elif e.numeric_score >= 80 %}B{% elif e.numeric_score >= 70 %}C{% elif e.numeric_score >= 60 %}D{% else %}F{% endif %}
-                    {% else %}
-                      N/A
-                    {% endif %}
-                  {% endif %}
-                </td>
-                <td class="text-center">
-                  {% if e.subject_rank %}
-                    {{ e.subject_rank }}
-                  {% else %}
-                    -
                   {% endif %}
                 </td>
               </tr>
@@ -59,6 +37,47 @@
     {% endfor %}
   {% else %}
     <p>No transcript records available.</p>
+  {% endif %}
+
+  {% if transcripts_by_year %}
+  <div class="card mt-3">
+    <div class="card-body">
+      <table class="table table-bordered">
+        <tbody>
+          <tr class="table-light">
+            <th style="width: 200px;">Total Result</th>
+            <td class="text-center">
+              {% if total_result %}
+                <strong>{{ total_result|floatformat:0 }}</strong>
+              {% else %}
+                N/A
+              {% endif %}
+            </td>
+          </tr>
+          <tr class="table-light">
+            <th>Average Result</th>
+            <td class="text-center">
+              {% if numeric_average %}
+                <strong>{{ numeric_average|floatformat:1 }} / 100</strong>
+              {% else %}
+                N/A
+              {% endif %}
+            </td>
+          </tr>
+          <tr class="table-light">
+            <th>Class Rank</th>
+            <td class="text-center">
+              {% if student_rank %}
+                <strong>#{{ student_rank }}</strong>
+              {% else %}
+                N/A
+              {% endif %}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
   {% endif %}
 
   <div class="mt-3 d-flex gap-2 align-items-center">

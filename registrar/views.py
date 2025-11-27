@@ -3,9 +3,9 @@ from django.contrib import messages
 from django.utils import timezone
 from django.http import HttpResponse
 from users.decorators import registrar_required
-from users.models import User
+from users.models import User, StudentProfile
 from subjects.models import Subject, Enrollment
-from ranks.models import Grade
+from ranks.models import Grade, calculate_student_average
 from django.db.utils import OperationalError
 import csv
 import io
@@ -28,10 +28,17 @@ def registrar_dashboard(request):
     total_students = User.objects.filter(role='student', is_approved=True).count()
     total_subjects = Subject.objects.filter(is_active=True).count()
     
+    # Get unread notifications for the registrar
+    from notifications.models import Notification
+    unread_notifications = Notification.objects.filter(user=request.user, is_read=False).order_by('-created_at')[:5]
+    unread_count = Notification.objects.filter(user=request.user, is_read=False).count()
+    
     context = {
         'pending_enrollments': pending_enrollments,
         'total_students': total_students,
         'total_subjects': total_subjects,
+        'unread_notifications': unread_notifications,
+        'unread_count': unread_count,
     }
     return render(request, 'registrar/registrar_dashboard.html', context)
 
@@ -136,16 +143,87 @@ def handle_waitlist(request, subject_id):
 
 @registrar_required
 def generate_transcripts(request):
-    students = User.objects.filter(role='student', is_approved=True)
+    # Get filter parameters
+    grade_level = request.GET.get('grade_level', '')
+    academic_year = request.GET.get('academic_year', '')
+    semester = request.GET.get('semester', '')
     selected_student_id = request.GET.get('student_id')
+    
+    # Get unique values for filters
+    grade_levels = StudentProfile.objects.values_list('grade_level', flat=True).distinct().order_by('grade_level')
+    academic_years = Enrollment.objects.values_list('academic_year', flat=True).distinct().order_by('-academic_year')
+    
+    # Filter students based on criteria
+    students_qs = User.objects.filter(role='student', is_approved=True).select_related('studentprofile')
+    
+    if grade_level:
+        students_qs = students_qs.filter(studentprofile__grade_level=grade_level)
+    
+    if academic_year:
+        students_qs = students_qs.filter(subject_enrollments__academic_year=academic_year).distinct()
+    
+    if semester:
+        students_qs = students_qs.filter(subject_enrollments__semester=semester).distinct()
+    
+    students = students_qs.order_by('username')
     
     student = None
     grades = []
+    total_result = None
+    numeric_average = None
+    student_rank = None
     
     if selected_student_id:
         student = get_object_or_404(User, id=selected_student_id, role='student')
         try:
             grades = Grade.objects.filter(student=student).select_related('subject')
+            
+            # Calculate total result and average
+            total_result = 0.0
+            graded_count = 0
+            for grade in grades:
+                if grade.score is not None:
+                    total_result += grade.score
+                    graded_count += 1
+            
+            if graded_count > 0:
+                numeric_average = total_result / graded_count
+            else:
+                numeric_average = None
+            
+            # Calculate student rank among peers in same grade level
+            try:
+                if hasattr(student, 'studentprofile') and student.studentprofile.grade_level:
+                    peers = User.objects.filter(
+                        role='student', 
+                        is_approved=True,
+                        studentprofile__grade_level=student.studentprofile.grade_level
+                    )
+                    peer_averages = []
+                    for peer in peers:
+                        try:
+                            avg = calculate_student_average(peer) or 0
+                            peer_averages.append((peer.id, avg))
+                        except Exception:
+                            pass
+                    
+                    peer_averages.sort(key=lambda x: x[1], reverse=True)
+                    rank = 0
+                    last_score = None
+                    idx = 0
+                    for pid, avg in peer_averages:
+                        idx += 1
+                        if avg == last_score:
+                            pass  # same rank
+                        else:
+                            rank = idx
+                            last_score = avg
+                        if pid == student.id:
+                            student_rank = rank
+                            break
+            except Exception:
+                student_rank = None
+                
         except OperationalError:
             from django.contrib import messages
             messages.error(request, 'Database tables for the `ranks` app are missing. Please run `python manage.py migrate`.')
@@ -160,6 +238,16 @@ def generate_transcripts(request):
         'students': students,
         'selected_student': student,
         'grades': grades,
+        'total_result': round(total_result, 2) if total_result is not None else None,
+        'numeric_average': round(numeric_average, 2) if numeric_average is not None else None,
+        'student_rank': student_rank,
+        'grade_levels': grade_levels,
+        'academic_years': academic_years,
+        'current_filters': {
+            'grade_level': grade_level,
+            'academic_year': academic_year,
+            'semester': semester,
+        },
     }
     return render(request, 'registrar/generate_transcripts.html', context)
 
@@ -168,17 +256,65 @@ def generate_csv_transcript(student, grades):
     response['Content-Disposition'] = f'attachment; filename="{student.username}_transcript.csv"'
     
     writer = csv.writer(response)
-    writer.writerow(['Student ID', 'Name', 'Course Code', 'Course Title', 'Grade', 'Credits'])
+    writer.writerow(['Student ID', 'Name', 'Course', 'Result (out of 100)'])
+    
+    total_result = 0.0
+    graded_count = 0
     
     for grade in grades:
+        score = grade.score if grade.score is not None else None
+        if score is not None:
+            total_result += score
+            graded_count += 1
+        
         writer.writerow([
             student.studentprofile.student_id,
             student.get_full_name(),
-            grade.subject.code,
-            grade.subject.title,
-            grade.grade or 'N/A',
-            grade.credits
+            grade.subject.name,
+            int(score) if score is not None else 'N/A'
         ])
+    
+    # Add summary rows
+    writer.writerow([])  # Empty row
+    writer.writerow(['Total Result', int(total_result) if total_result > 0 else 'N/A'])
+    numeric_average = total_result / graded_count if graded_count > 0 else None
+    writer.writerow(['Average Result', f"{numeric_average:.1f} / 100" if numeric_average else 'N/A'])
+    
+    # Calculate student rank
+    student_rank = None
+    try:
+        if hasattr(student, 'studentprofile') and student.studentprofile.grade_level:
+            peers = User.objects.filter(
+                role='student', 
+                is_approved=True,
+                studentprofile__grade_level=student.studentprofile.grade_level
+            )
+            peer_averages = []
+            for peer in peers:
+                try:
+                    avg = calculate_student_average(peer) or 0
+                    peer_averages.append((peer.id, avg))
+                except Exception:
+                    pass
+            
+            peer_averages.sort(key=lambda x: x[1], reverse=True)
+            rank = 0
+            last_score = None
+            idx = 0
+            for pid, avg in peer_averages:
+                idx += 1
+                if avg == last_score:
+                    pass
+                else:
+                    rank = idx
+                    last_score = avg
+                if pid == student.id:
+                    student_rank = rank
+                    break
+    except Exception:
+        pass
+    
+    writer.writerow(['Class Rank', f"#{student_rank}" if student_rank else 'N/A'])
     
     return response
 
@@ -205,7 +341,7 @@ def generate_pdf_transcript(student, grades):
     student_info = f"""
     <b>Student Name:</b> {student.get_full_name() or student.username}<br/>
     <b>Student ID:</b> {getattr(student.studentprofile, 'student_id', 'N/A')}<br/>
-    <b>Program:</b> {getattr(student.studentprofile, 'program', 'N/A')}<br/>
+    <b>Grade Level:</b> Grade {getattr(student.studentprofile, 'grade_level', 'N/A')}<br/>
     <b>Generated Date:</b> {timezone.now().strftime('%Y-%m-%d')}
     """
     story.append(Paragraph(student_info, styles["Normal"]))
@@ -213,22 +349,20 @@ def generate_pdf_transcript(student, grades):
     
     # Grades Table
     if grades:
-        data = [['Course Code', 'Course Title', 'Credits', 'Grade']]
-        total_credits = 0
-        total_points = 0
+        data = [['Course', 'Result (out of 100)']]
+        total_result = 0.0
+        graded_count = 0
         
         for grade in grades:
-            grade_point = get_grade_point(grade.grade)
-            credits = grade.credits
+            score = grade.score if grade.score is not None else None
+            if score is not None:
+                total_result += score
+                graded_count += 1
+            
             data.append([
-                grade.subject.code,
-                grade.subject.title,
-                str(credits),
-                grade.grade or 'In Progress'
+                grade.subject.name,
+                str(int(score)) if score is not None else 'N/A'
             ])
-            if grade.grade and credits:
-                total_credits += credits
-                total_points += grade_point * credits
         
         # Create table
         table = Table(data)
@@ -245,10 +379,61 @@ def generate_pdf_transcript(student, grades):
         story.append(table)
         story.append(Spacer(1, 20))
         
-        # GPA Calculation
-        gpa = total_points / total_credits if total_credits > 0 else 0
-        gpa_info = f"<b>Cumulative GPA:</b> {gpa:.2f} | <b>Total Credits:</b> {total_credits}"
-        story.append(Paragraph(gpa_info, styles["Normal"]))
+        # Calculate average
+        numeric_average = total_result / graded_count if graded_count > 0 else None
+        
+        # Calculate student rank
+        student_rank = None
+        try:
+            if hasattr(student, 'studentprofile') and student.studentprofile.grade_level:
+                peers = User.objects.filter(
+                    role='student', 
+                    is_approved=True,
+                    studentprofile__grade_level=student.studentprofile.grade_level
+                )
+                peer_averages = []
+                for peer in peers:
+                    try:
+                        avg = calculate_student_average(peer) or 0
+                        peer_averages.append((peer.id, avg))
+                    except Exception:
+                        pass
+                
+                peer_averages.sort(key=lambda x: x[1], reverse=True)
+                rank = 0
+                last_score = None
+                idx = 0
+                for pid, avg in peer_averages:
+                    idx += 1
+                    if avg == last_score:
+                        pass
+                    else:
+                        rank = idx
+                        last_score = avg
+                    if pid == student.id:
+                        student_rank = rank
+                        break
+        except Exception:
+            pass
+        
+        # Summary Section
+        summary_data = [
+            ['Total Result', str(int(total_result)) if total_result > 0 else 'N/A'],
+            ['Average Result', f"{numeric_average:.1f} / 100" if numeric_average else 'N/A'],
+            ['Class Rank', f"#{student_rank}" if student_rank else 'N/A']
+        ]
+        
+        summary_table = Table(summary_data)
+        summary_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
+            ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 11),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey, colors.white])
+        ]))
+        story.append(summary_table)
     else:
         story.append(Paragraph("No grades available.", styles["Normal"]))
     

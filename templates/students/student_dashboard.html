@@ -199,6 +199,85 @@
                         </div>
                     </div>
 
+                    <!-- Notifications and Announcements -->
+                    <div class="row mt-4">
+                        <div class="col-lg-6">
+                            <div class="card">
+                                <div class="card-header d-flex justify-content-between align-items-center">
+                                    <h5 class="card-title mb-0">
+                                        <i class="fas fa-bell me-2"></i>Notifications
+                                        {% if unread_count > 0 %}
+                                        <span class="badge bg-danger ms-2">{{ unread_count }}</span>
+                                        {% endif %}
+                                    </h5>
+                                    <button class="btn btn-sm btn-outline-primary" onclick="refreshNotifications()" id="refreshNotificationsBtn">
+                                        <i class="fas fa-sync-alt me-1"></i>Refresh
+                                    </button>
+                                </div>
+                                <div class="card-body" id="notificationsContainer" style="max-height: 400px; overflow-y: auto;">
+                                    {% if unread_notifications %}
+                                        <div class="list-group list-group-flush">
+                                            {% for notif in unread_notifications %}
+                                            <div class="list-group-item">
+                                                <div class="d-flex w-100 justify-content-between">
+                                                    <div>
+                                                        <h6 class="mb-1">{{ notif.title|default:"Notification" }}</h6>
+                                                        <p class="mb-1">{{ notif.message|truncatewords:20 }}</p>
+                                                    </div>
+                                                </div>
+                                                <small class="text-muted">
+                                                    <i class="fas fa-clock me-1"></i>{{ notif.created_at|timesince }} ago
+                                                </small>
+                                            </div>
+                                            {% endfor %}
+                                        </div>
+                                    {% else %}
+                                        <div class="text-center py-4">
+                                            <i class="fas fa-bell-slash fa-2x text-muted mb-2"></i>
+                                            <p class="text-muted mb-0">No new notifications</p>
+                                        </div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-lg-6">
+                            <div class="card">
+                                <div class="card-header d-flex justify-content-between align-items-center">
+                                    <h5 class="card-title mb-0">
+                                        <i class="fas fa-bullhorn me-2"></i>Announcements
+                                    </h5>
+                                    <button class="btn btn-sm btn-outline-success" onclick="refreshAnnouncements()" id="refreshAnnouncementsBtn">
+                                        <i class="fas fa-sync-alt me-1"></i>Refresh
+                                    </button>
+                                </div>
+                                <div class="card-body" id="announcementsContainer" style="max-height: 400px; overflow-y: auto;">
+                                    {% if recent_announcements %}
+                                        <div class="list-group list-group-flush">
+                                            {% for ann in recent_announcements %}
+                                            <div class="list-group-item border-start border-success border-3">
+                                                <div class="d-flex w-100 justify-content-between">
+                                                    <div>
+                                                        <h6 class="mb-1 text-success">{{ ann.title }}</h6>
+                                                        <p class="mb-1" style="white-space: pre-line;">{{ ann.content|truncatewords:25 }}</p>
+                                                    </div>
+                                                </div>
+                                                <small class="text-muted">
+                                                    <i class="fas fa-calendar me-1"></i>{{ ann.created_at|date:"F j, Y" }} at {{ ann.created_at|date:"g:i A" }}
+                                                </small>
+                                            </div>
+                                            {% endfor %}
+                                        </div>
+                                    {% else %}
+                                        <div class="text-center py-4">
+                                            <i class="fas fa-bullhorn fa-2x text-muted mb-2"></i>
+                                            <p class="text-muted mb-0">No announcements at the moment</p>
+                                        </div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Recent Activity -->
                     <div class="row mt-4">
                         <div class="col-12">
@@ -352,4 +431,120 @@
     font-size: 0.75rem;
 }
 </style>
+
+<script>
+function refreshNotifications() {
+    const btn = document.getElementById('refreshNotificationsBtn');
+    const container = document.getElementById('notificationsContainer');
+    const originalHtml = btn.innerHTML;
+    
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Loading...';
+    
+    fetch('{% url "get_notifications_ajax" %}')
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                if (data.notifications.length > 0) {
+                    let html = '<div class="list-group list-group-flush">';
+                    data.notifications.forEach(notif => {
+                        html += `
+                            <div class="list-group-item">
+                                <div class="d-flex w-100 justify-content-between">
+                                    <div>
+                                        <h6 class="mb-1">${notif.title || 'Notification'}</h6>
+                                        <p class="mb-1">${notif.message || ''}</p>
+                                    </div>
+                                </div>
+                                <small class="text-muted">
+                                    <i class="fas fa-clock me-1"></i>${notif.created_at}
+                                </small>
+                            </div>
+                        `;
+                    });
+                    html += '</div>';
+                    container.innerHTML = html;
+                } else {
+                    container.innerHTML = `
+                        <div class="text-center py-4">
+                            <i class="fas fa-bell-slash fa-2x text-muted mb-2"></i>
+                            <p class="text-muted mb-0">No new notifications</p>
+                        </div>
+                    `;
+                }
+                // Update badge count if exists
+                const badge = document.querySelector('.card-header .badge');
+                if (badge && data.unread_count > 0) {
+                    badge.textContent = data.unread_count;
+                    badge.style.display = 'inline-block';
+                } else if (badge) {
+                    badge.style.display = 'none';
+                }
+            } else {
+                alert('Error loading notifications: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('Error loading notifications. Please try again.');
+        })
+        .finally(() => {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+        });
+}
+
+function refreshAnnouncements() {
+    const btn = document.getElementById('refreshAnnouncementsBtn');
+    const container = document.getElementById('announcementsContainer');
+    const originalHtml = btn.innerHTML;
+    
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Loading...';
+    
+    fetch('{% url "get_announcements_ajax" %}')
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                if (data.announcements.length > 0) {
+                    let html = '<div class="list-group list-group-flush">';
+                    data.announcements.forEach(ann => {
+                        html += `
+                            <div class="list-group-item border-start border-success border-3">
+                                <div class="d-flex w-100 justify-content-between">
+                                    <div>
+                                        <h6 class="mb-1 text-success">${ann.title}</h6>
+                                        <p class="mb-1" style="white-space: pre-line;">${ann.content}</p>
+                                    </div>
+                                </div>
+                                <small class="text-muted">
+                                    <i class="fas fa-calendar me-1"></i>${ann.created_at}
+                                </small>
+                            </div>
+                        `;
+                    });
+                    html += '</div>';
+                    container.innerHTML = html;
+                } else {
+                    container.innerHTML = `
+                        <div class="text-center py-4">
+                            <i class="fas fa-bullhorn fa-2x text-muted mb-2"></i>
+                            <p class="text-muted mb-0">No announcements at the moment</p>
+                        </div>
+                    `;
+                }
+            } else {
+                alert('Error loading announcements: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(error => {
+            console.error('Error:', error);
+            alert('Error loading announcements. Please try again.');
+        })
+        .finally(() => {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+        });
+}
+</script>
 {% endblock %}

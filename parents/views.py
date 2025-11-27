@@ -31,41 +31,77 @@ class ChildLinkRequestForm(forms.ModelForm):
         if not identifier:
             raise forms.ValidationError('Please provide a student identifier (ID, email or username).')
 
-        # Try to match to an existing Student by student_id, email or username
+        student = None
+        student_user = None
 
-        # exact matches first (case-insensitive)
+        # Try to match using Student model first
         student = Student.objects.filter(student_id__iexact=identifier).first()
         if not student:
             student = Student.objects.filter(user__email__iexact=identifier).first()
         if not student:
             student = Student.objects.filter(user__username__iexact=identifier).first()
-
-        # If identifier looks like an email and we didn't find an exact match,
-        # try a fuzzy icontains search and be helpful if there are multiple matches.
-        if not student and '@' in identifier:
-            # normalize
-            normalized = identifier.strip().lower()
-            candidates = Student.objects.filter(user__email__icontains=normalized)
-            count = candidates.count()
-            if count == 1:
-                student = candidates.first()
-            elif count > 1:
-                # Build a helpful message listing possible matches (name and student_id)
-                examples = []
-                for c in candidates[:5]:
-                    name = c.user.get_full_name() or c.user.username
-                    sid = getattr(c, 'student_id', '')
-                    examples.append(f"{name} ({sid})")
-                more = '...' if count > 5 else ''
-                raise forms.ValidationError(
-                    'Multiple students match that email. Please enter the student ID to be specific. ' \
-                    f'Possible matches: {", ".join(examples)}{more}'
-                )
+        
+        # If not found in Student model, try User with studentprofile
+        if not student:
+            from users.models import User, StudentProfile
+            # Try by studentprofile.student_id
+            try:
+                student_profile = StudentProfile.objects.filter(student_id__iexact=identifier).first()
+                if student_profile:
+                    student_user = student_profile.user
+            except:
+                pass
+            
+            # Try by email
+            if not student_user:
+                student_user = User.objects.filter(role='student', email__iexact=identifier).first()
+            
+            # Try by username
+            if not student_user:
+                student_user = User.objects.filter(role='student', username__iexact=identifier).first()
+            
+            # If identifier looks like an email and we didn't find an exact match, try fuzzy search
+            if not student_user and '@' in identifier:
+                normalized = identifier.strip().lower()
+                candidates = User.objects.filter(role='student', email__icontains=normalized)
+                count = candidates.count()
+                if count == 1:
+                    student_user = candidates.first()
+                elif count > 1:
+                    examples = []
+                    for c in candidates[:5]:
+                        name = c.get_full_name() or c.username
+                        try:
+                            sid = c.studentprofile.student_id if hasattr(c, 'studentprofile') else 'N/A'
+                        except:
+                            sid = 'N/A'
+                        examples.append(f"{name} ({sid})")
+                    more = '...' if count > 5 else ''
+                    raise forms.ValidationError(
+                        'Multiple students match that email. Please enter the student ID to be specific. ' \
+                        f'Possible matches: {", ".join(examples)}{more}'
+                    )
+        
+        # If we found a student_user but not a Student model, create a wrapper
+        if student_user and not student:
+            # Create a pseudo-student object for compatibility
+            class PseudoStudent:
+                def __init__(self, user):
+                    self.user = user
+                    try:
+                        self.student_id = user.studentprofile.student_id
+                    except:
+                        self.student_id = f"STU{user.id:06d}"
+            
+            student = PseudoStudent(student_user)
+            self._matched_student_user = student_user
+        elif student:
+            self._matched_student_user = student.user
 
         if not student:
-            raise forms.ValidationError('No student found matching that identifier. Please check and try again (try student ID if unsure).')
+            raise forms.ValidationError('No student found matching that identifier. Please check and try again (try student ID, email, or username).')
 
-        # store matched_student id on the form for use in the view
+        # store matched_student on the form for use in the view
         self._matched_student = student
         return identifier
 
@@ -134,9 +170,16 @@ def parent_dashboard(request):
             'pending_fees': pending_fees.count(),
         })
     
+    # Get unread notifications for the parent
+    from notifications.models import Notification
+    unread_notifications = Notification.objects.filter(user=request.user, is_read=False).order_by('-created_at')[:5]
+    unread_count = Notification.objects.filter(user=request.user, is_read=False).count()
+    
     context = {
         'children_data': children_data,
         'total_children': children.count(),
+        'unread_notifications': unread_notifications,
+        'unread_count': unread_count,
     }
     return render(request, 'parents/parent_dashboard.html', context)
 
@@ -296,7 +339,8 @@ def school_announcements(request):
                 target_roles = []
             
             # Check if announcement targets parents or is for everyone
-            if 'parent' in target_roles or not target_roles:
+            # Empty list or no target_roles means show to all
+            if not target_roles or len(target_roles) == 0 or 'parent' in target_roles:
                 relevant_announcements.append(announcement)
                 
     except Exception as e:
@@ -332,7 +376,7 @@ def contact_teachers(request, student_id):
     context = {
         'child': child,
         'relationship': child_link.relationship,
-        'teachers': teachers,
+        'teachers': list(teachers),  # Convert set to list for template
     }
     return render(request, 'parents/contact_teachers.html', context)
 
@@ -409,34 +453,82 @@ def parent_fees_summary(request):
 @parent_required
 def parent_progress_overview(request):
     """Show progress overview (GPA/ranks) for all children"""
-    children_links = StudentParent.objects.filter(parent=request.user).select_related('student')
-    progress = []
+    children_links = StudentParent.objects.filter(parent=request.user).select_related('student', 'student__studentprofile')
+    children_progress = []
+    
     for link in children_links:
         child = link.student
         try:
-            grades = Grade.objects.filter(student=child)
-        except OperationalError:
-            grades = []
-
-        # Simple metric: average numeric score if available, else count of grades
-        total_score = 0
-        count = 0
-        for g in grades:
-            if getattr(g, 'score', None) is not None:
-                total_score += g.score
-                count += 1
-
-        avg_score = (total_score / count) if count > 0 else None
-
-        progress.append({
-            'student': child,
-            'relationship': link.relationship,
-            'avg_score': avg_score,
-            'grades_count': len(grades),
-        })
-
+            # Get enrollments with results
+            enrollments = Enrollment.objects.filter(student=child).select_related('subject')
+            
+            # Calculate scores using the same method as students
+            from users.views import compute_numeric_scores
+            score_map, total_result, graded_count, average_result = compute_numeric_scores(child, enrollments)
+            
+            # Get subject results
+            subject_results = []
+            for enrollment in enrollments:
+                score = score_map.get(enrollment.id)
+                if score is not None:
+                    subject_results.append({
+                        'subject': enrollment.subject.name,
+                        'score': round(float(score), 2),
+                        'academic_year': getattr(enrollment, 'academic_year', 'N/A'),
+                        'semester': getattr(enrollment, 'get_semester_display', lambda: 'N/A')(),
+                    })
+            
+            # Calculate class rank
+            class_rank = None
+            try:
+                if hasattr(child, 'studentprofile') and child.studentprofile.grade_level:
+                    grade_level = child.studentprofile.grade_level
+                    peers = User.objects.filter(
+                        role='student',
+                        studentprofile__grade_level=grade_level
+                    )
+                    peer_data = []
+                    for peer in peers:
+                        peer_enrollments = Enrollment.objects.filter(student=peer)
+                        _, _, _, peer_avg = compute_numeric_scores(peer, peer_enrollments)
+                        if peer_avg is not None:
+                            peer_data.append({
+                                'student_id': peer.id,
+                                'average': peer_avg
+                            })
+                    peer_data.sort(key=lambda x: x['average'], reverse=True)
+                    for idx, peer in enumerate(peer_data, start=1):
+                        if peer['student_id'] == child.id:
+                            class_rank = idx
+                            break
+            except Exception:
+                pass
+            
+            children_progress.append({
+                'student': child,
+                'relationship': link.relationship,
+                'subject_results': subject_results,
+                'total_result': round(total_result, 2),
+                'average_result': average_result,
+                'class_rank': class_rank,
+                'graded_count': graded_count,
+            })
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            children_progress.append({
+                'student': child,
+                'relationship': link.relationship,
+                'subject_results': [],
+                'total_result': 0,
+                'average_result': None,
+                'class_rank': None,
+                'graded_count': 0,
+                'error': str(e)
+            })
+    
     context = {
-        'progress': progress,
+        'children_progress': children_progress,
     }
     return render(request, 'parents/parent_progress.html', context)
 
@@ -485,13 +577,17 @@ def request_child_link(request):
             # by creating the StudentParent link and notifying the parent.
             if getattr(settings, 'PARENT_CHILD_LINK_AUTO_APPROVE', True) and matched_student:
                 try:
+                    # Get the actual user object
+                    student_user = getattr(form, '_matched_student_user', None) or matched_student.user
+                    
                     StudentParent.objects.get_or_create(
                         parent=req.parent,
-                        student=matched_student.user,
-                        defaults={'relationship': req.relationship or 'Parent'}
+                        student=student_user,
+                        defaults={'relationship': req.relationship or 'Mother'}
                     )
                     req.status = 'approved'
                     req.save()
+                    messages.success(request, f'Child "{matched_student.user.get_full_name() or matched_student.user.username}" has been successfully linked to your account!')
                     # notify the parent that the request was approved automatically
                     parent_email = req.parent.email
                     if parent_email:

@@ -42,9 +42,8 @@
               <td>
                 {% if e.result_score is not None %}
                   <strong>{{ e.result_score|floatformat:0 }}</strong>
-                  <div class="text-muted small">
-                    {% if e.final_grade %}Letter: {{ e.final_grade }}{% endif %}
-                  </div>
+                {% elif e.result %}
+                  <strong>{{ e.result }}</strong>
                 {% else %}
                   <span class="text-muted">Not graded</span>
                 {% endif %}
@@ -53,7 +52,7 @@
               <td>
                 <form method="post" action="{% url 'update_grade' e.id %}" class="d-inline">
                   {% csrf_token %}
-                  <input type="text" name="final_grade" placeholder="Score or A/B" style="width:110px" />
+                  <input type="number" name="final_grade" placeholder="Score (0-100)" min="0" max="100" step="0.1" style="width:130px" />
                   <button class="btn btn-sm btn-success">Update</button>
                 </form>
               </td>

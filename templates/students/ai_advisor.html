@@ -1,158 +1,56 @@
-<!-- templates/students/ai_advisor.html -->
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Learning Helper</title>
-    <style>
-        body {
-            font-family: 'Comic Sans MS', cursive, sans-serif;
-            background-color: #f0f8ff;
-            margin: 0;
-            padding: 20px;
-        }
-        .container {
-            max-width: 800px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 15px;
-            padding: 20px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        }
-        .chat-container {
-            height: 400px;
-            border: 2px solid #4CAF50;
-            border-radius: 10px;
-            padding: 15px;
-            margin-bottom: 20px;
-            overflow-y: auto;
-            background-color: #f9f9f9;
-        }
-        .message {
-            margin: 10px 0;
-            padding: 10px;
-            border-radius: 10px;
-            max-width: 80%;
-        }
-        .user-message {
-            background-color: #e3f2fd;
-            margin-left: auto;
-            text-align: right;
-        }
-        .ai-message {
-            background-color: #f1f8e9;
-            margin-right: auto;
-        }
-        .input-container {
-            display: flex;
-            gap: 10px;
-        }
-        input[type="text"] {
-            flex: 1;
-            padding: 10px;
-            border: 2px solid #4CAF50;
-            border-radius: 20px;
-            font-size: 16px;
-        }
-        button {
-            background-color: #4CAF50;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 20px;
-            cursor: pointer;
-            font-size: 16px;
-        }
-        button:hover {
-            background-color: #45a049;
-        }
-        .welcome {
-            text-align: center;
-            color: #2E7D32;
-            margin-bottom: 20px;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="welcome">
-            <h1>🤖 My Learning Helper</h1>
-            <p>Hi there! I'm here to help you with homework and learning!</p>
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}AI Learning Helper - SIMS{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+    <div class="card shadow-lg">
+        <div class="card-header bg-success text-white">
+            <h4 class="card-title mb-0">
+                <i class="fas fa-robot me-2"></i>My Learning Helper
+            </h4>
+            <p class="mb-0 mt-2">Hi there! I'm here to help you with homework and learning!</p>
         </div>
-        
-        <div class="chat-container" id="chatContainer">
-            <div class="message ai-message">
-                <strong>Helper:</strong> Hi! I'm your learning helper! I can help with homework, suggest fun activities, or answer questions about your subjects. What would you like help with today?
+        <div class="card-body">
+            <div class="chat-container" id="chatContainer" style="height: 400px; border: 2px solid #4CAF50; border-radius: 10px; padding: 15px; margin-bottom: 20px; overflow-y: auto; background-color: #f9f9f9;">
+                <div class="message ai-message" style="margin: 10px 0; padding: 10px; border-radius: 10px; max-width: 80%; background-color: #f1f8e9; margin-right: auto;">
+                    <strong>Helper:</strong> Hi! I'm your learning helper! I can help with homework, suggest fun activities, or answer questions about your subjects. What would you like help with today?
+                </div>
+                {% if messages %}
+                    {% for message in messages %}
+                    <div class="message {% if message.is_user %}user-message{% else %}ai-message{% endif %}" style="margin: 10px 0; padding: 10px; border-radius: 10px; max-width: 80%; {% if message.is_user %}background-color: #e3f2fd; margin-left: auto; text-align: right;{% else %}background-color: #f1f8e9; margin-right: auto;{% endif %}">
+                        <strong>{% if message.is_user %}You{% else %}Helper{% endif %}:</strong> {{ message.content|linebreaks }}
+                    </div>
+                    {% endfor %}
+                {% endif %}
             </div>
-        </div>
-        
-        <div class="input-container">
-            <input type="text" id="messageInput" placeholder="Type your question here..." onkeypress="handleKeyPress(event)">
-            <button onclick="sendMessage()">Send</button>
+            
+            <form method="post" id="aiForm" action="{% url 'interact_with_ai' %}">
+                {% csrf_token %}
+                <div class="input-container d-flex gap-2">
+                    <input type="text" class="form-control" id="messageInput" name="message" placeholder="Type your question here..." required style="border: 2px solid #4CAF50; border-radius: 20px; padding: 10px; font-size: 16px;">
+                    <button type="submit" class="btn btn-success" style="border-radius: 20px; padding: 10px 20px;">Send</button>
+                </div>
+            </form>
         </div>
     </div>
+</div>
 
 <script>
     function handleKeyPress(event) {
-        if (event.key === 'Enter') {
-            sendMessage();
+        if (event.key === 'Enter' && !event.shiftKey) {
+            event.preventDefault();
+            document.getElementById('aiForm').submit();
         }
     }
-
-    function sendMessage() {
-        const input = document.getElementById('messageInput');
-        const message = input.value.trim().toLowerCase();
-        
-        if (!message) return;
-
-        // Add user message to chat
-        addMessage(input.value, 'user');
-        input.value = '';
-
-        // Generate immediate AI response
-        const aiResponse = generateAIResponse(message);
-        addMessage(aiResponse, 'ai');
-    }
-
-   function generateAIResponse(userMessage) {
-    const message = userMessage.toLowerCase();
     
-    if (message.includes('grade 1') || message.includes('first grade')) {
-        return "First grade is so much fun! You'll learn reading, basic math, science about animals and plants, and lots of fun activities! What's your favorite thing to learn?";
-    } else if (message.includes('subjects') || message.includes('classes')) {
-        return "In first grade, you'll have fun learning: 📚 Reading and stories, ➕ Math with numbers, 🌱 Science about plants and animals, 🎨 Art and drawing, 🎵 Music and songs! Which one sounds most fun to you?";
-    } else if (message.includes('science') || message.includes('scince') || message.includes('sciense')) {
-        return "Science is amazing! In first grade, you'll learn about: 🐻 Animals and their homes, 🌻 Plants and how they grow, 🌞 Weather and seasons, 🪨 Rocks and soil. Would you like to know more about animals, plants, or weather?";
-    } else if (message.includes('math') || message.includes('number')) {
-        return "Math is fun with numbers! In first grade, you'll learn: 1️⃣ Counting to 100, 2️⃣ Adding and subtracting, 3️⃣ Shapes and patterns, 4️⃣ Measuring things. Would you like to practice counting or learn about shapes?";
-    } else if (message.includes('reading') || message.includes('book')) {
-        return "Reading opens up wonderful stories! In first grade, you'll: 📖 Learn new words, 🔤 Master the alphabet, 📚 Read fun stories, ✍️ Write your own sentences. What kind of stories do you like?";
-    } else if (message.includes('homework') || message.includes('help me')) {
-        return "I'd love to help with homework! Is it for: 📝 Reading practice, 🧮 Math problems, 🔬 Science questions, or ✏️ Writing practice? Tell me what you're working on!";
-    } else if (message.includes('study') || message.includes('learn how')) {
-        return "Great question! Here are fun ways to study: 🎵 Sing your ABCs or counting songs, 🎨 Draw pictures of what you learn, 🧩 Use colorful flashcards, ⏰ Practice for 15 minutes each day. What subject do you want to practice?";
-    } else if (message.includes('hello') || message.includes('hi')) {
-        return "Hello! I'm your learning helper! I can help with school subjects, homework, or fun learning activities. What would you like to learn about today?";
-    } else {
-        const funResponses = [
-            "I'd love to help you learn! You can ask me about reading, math, science, or fun learning activities!",
-            "What would you like to explore today? We can talk about numbers, animals, stories, or anything you're learning!",
-            "Learning is an adventure! Tell me what you're curious about!",
-            "I'm here to make learning fun! Want to talk about counting, reading, science, or something else?"
-        ];
-        return funResponses[Math.floor(Math.random() * funResponses.length)];
-    }
-}
-
-    function addMessage(content, sender) {
+    // Auto-scroll to bottom on page load
+    document.addEventListener('DOMContentLoaded', function() {
         const container = document.getElementById('chatContainer');
-        const messageDiv = document.createElement('div');
-        messageDiv.className = `message ${sender}-message`;
-        messageDiv.innerHTML = `<strong>${sender === 'user' ? 'You' : 'Helper'}:</strong> ${content}`;
-        container.appendChild(messageDiv);
-        container.scrollTop = container.scrollHeight;
-    }
+        if (container) {
+            container.scrollTop = container.scrollHeight;
+        }
+    });
 </script>
-</body>
-</html>
+{% endblock %}

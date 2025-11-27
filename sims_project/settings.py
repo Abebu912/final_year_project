@@ -100,6 +100,11 @@ EMAIL_USE_SSL = False
 EMAIL_HOST_USER = 'abebuwubete099@gmail.com'
 EMAIL_HOST_PASSWORD = 'xsvuarxmynwdvjfh'  # Use App Password, not regular password
 DEFAULT_FROM_EMAIL = 'abebuwubete099@gmail.com'
+SITE_NAME = 'SIMS'  # School Information Management System
+
+# Parent-Child Linking Settings
+PARENT_CHILD_LINK_AUTO_APPROVE = True  # Automatically approve child link requests when student is found
+
 # Passwd reset settings
 PASSWORD_RESET_TIMEOUT = 86400  # 24 hours in seconds
 SITE_URL = 'http://127.0.0.1:8000'  # Change to your domain in production

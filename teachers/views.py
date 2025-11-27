@@ -13,6 +13,7 @@ from django.views.decorators.http import require_POST
 from .forms import BulkAssignForm
 from django.http import JsonResponse, HttpResponseBadRequest
 from django.views.decorators.csrf import csrf_exempt
+from notifications.models import Notification
 
 @teacher_required
 def teacher_dashboard(request):
@@ -85,6 +86,10 @@ def teacher_dashboard(request):
     for s in teacher_subjects:
         avg = Grade.objects.filter(subject=s).aggregate(avg=Avg('score'))['avg']
         subject_averages[s.id] = round(avg, 2) if avg is not None else None
+    # Get unread notifications for the teacher
+    unread_notifications = Notification.objects.filter(user=request.user, is_read=False).order_by('-created_at')[:5]
+    unread_count = Notification.objects.filter(user=request.user, is_read=False).count()
+    
     context = {
         'teacher_subjects': teacher_subjects,
         'total_students': total_students,
@@ -94,6 +99,8 @@ def teacher_dashboard(request):
         'student_averages': student_averages,
         'student_ranking': ranked,
         'subject_averages': subject_averages,
+        'unread_notifications': unread_notifications,
+        'unread_count': unread_count,
     }
     return render(request, 'teachers/teacher_dashboard.html', context)
 
@@ -291,6 +298,7 @@ def performance_reports(request):
         grades = []
         avg_score = 0
         score_distribution = {}
+        subject_ranking = []
     
     context = {
         'teacher_subjects': teacher_subjects,

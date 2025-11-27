@@ -1,251 +1,51 @@
-<!-- templates/students/announcements.html -->
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>School Announcements</title>
-    <style>
-        body {
-            font-family: 'Comic Sans MS', cursive, sans-serif;
-            background-color: #f0f8ff;
-            margin: 0;
-            padding: 20px;
-        }
-        .container {
-            max-width: 800px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 15px;
-            padding: 20px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        }
-        .header {
-            text-align: center;
-            color: #2E7D32;
-            margin-bottom: 30px;
-        }
-        .announcement {
-            background: #e8f5e9;
-            border-left: 5px solid #4CAF50;
-            padding: 15px;
-            margin: 15px 0;
-            border-radius: 8px;
-        }
-        .announcement-title {
-            font-weight: bold;
-            color: #2E7D32;
-            font-size: 1.2em;
-            margin-bottom: 8px;
-        }
-        .announcement-content {
-            color: #555;
-            line-height: 1.5;
-            white-space: pre-line;
-        }
-        .announcement-date {
-            color: #888;
-            font-size: 0.9em;
-            text-align: right;
-            margin-top: 10px;
-        }
-        .no-announcements {
-            text-align: center;
-            color: #666;
-            padding: 40px;
-            font-style: italic;
-        }
-        .badge {
-            background: #ff6b6b;
-            color: white;
-            padding: 4px 8px;
-            border-radius: 12px;
-            font-size: 0.8em;
-            margin-left: 10px;
-        }
-        .loading {
-            text-align: center;
-            color: #4CAF50;
-            padding: 20px;
-        }
-        .error {
-            text-align: center;
-            color: #ff6b6b;
-            padding: 20px;
-            background: #ffeaa7;
-            border-radius: 8px;
-        }
-        .refresh-btn {
-            background: #4CAF50;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 20px;
-            cursor: pointer;
-            font-size: 14px;
-            margin: 10px;
-        }
-        .refresh-btn:hover {
-            background: #45a049;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>📢 School Announcements</h1>
-            <p>Important messages from your teachers and school</p>
-            <button class="refresh-btn" onclick="loadAnnouncements()">🔄 Refresh</button>
+{% extends 'base.html' %}
+{% load static %}
+
+{% block title %}School Announcements - SIMS{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+    <div class="card shadow-lg">
+        <div class="card-header bg-success text-white">
+            <h2 class="mb-0">
+                <i class="fas fa-bullhorn me-2"></i>School Announcements
+            </h2>
+            <p class="mb-0 mt-2">Important messages from your teachers and school</p>
         </div>
-        
-        <div id="announcementsContainer">
-            <div class="loading" id="loadingMessage">
-                ⏳ Loading announcements...
+        <div class="card-body">
+            {% if announcements %}
+                <div class="list-group">
+                    {% for ann in announcements %}
+                    <div class="list-group-item mb-3 border-start border-success border-4">
+                        <div class="d-flex justify-content-between align-items-start">
+                            <div class="flex-grow-1">
+                                <h5 class="mb-2 text-success">
+                                    <strong>{{ ann.title }}</strong>
+                                </h5>
+                                <p class="mb-2 text-dark" style="white-space: pre-line;">{{ ann.content }}</p>
+                                <small class="text-muted">
+                                    <i class="fas fa-calendar me-1"></i>
+                                    Posted {{ ann.created_at|date:"F j, Y" }} at {{ ann.created_at|date:"g:i A" }}
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+            {% else %}
+                <div class="text-center py-5">
+                    <i class="fas fa-inbox fa-3x text-muted mb-3"></i>
+                    <h4 class="text-muted">No Announcements</h4>
+                    <p class="text-muted">There are no announcements at the moment. Check back later!</p>
+                </div>
+            {% endif %}
+            
+            <div class="mt-3 text-center">
+                <a href="{% url 'view_announcements' %}" class="btn btn-success">
+                    <i class="fas fa-sync-alt me-2"></i>Refresh
+                </a>
             </div>
-            <div id="announcementsList"></div>
         </div>
     </div>
-
-    <script>
-        // Try multiple possible API endpoints
-        const possibleEndpoints = [
-            '/api/announcements/',
-            '/api/students/announcements/',
-            '/announcements/api/',
-            '/api/student-announcements/'
-        ];
-
-        // Fetch announcements from API
-        async function loadAnnouncements() {
-            const loadingMessage = document.getElementById('loadingMessage');
-            const announcementsList = document.getElementById('announcementsList');
-            
-            loadingMessage.style.display = 'block';
-            loadingMessage.innerHTML = '⏳ Loading announcements...';
-            announcementsList.innerHTML = '';
-
-            let success = false;
-            
-            // Try each endpoint until one works
-            for (const endpoint of possibleEndpoints) {
-                try {
-                    console.log(`Trying endpoint: ${endpoint}`);
-                    const response = await fetch(endpoint, {
-                        headers: {
-                            'Content-Type': 'application/json',
-                        }
-                    });
-                    
-                    if (response.ok) {
-                        const data = await response.json();
-                        console.log('Announcements data:', data);
-                        displayAnnouncements(data);
-                        success = true;
-                        break;
-                    }
-                } catch (error) {
-                    console.log(`Endpoint ${endpoint} failed:`, error);
-                    continue;
-                }
-            }
-
-            if (!success) {
-                // If no API endpoints work, show sample data
-                showSampleAnnouncements();
-            }
-            
-            loadingMessage.style.display = 'none';
-        }
-
-        function displayAnnouncements(data) {
-            const announcementsList = document.getElementById('announcementsList');
-            announcementsList.innerHTML = '';
-
-            // Handle different possible response structures
-            let announcements = [];
-            
-            if (Array.isArray(data)) {
-                announcements = data;
-            } else if (data.announcements && Array.isArray(data.announcements)) {
-                announcements = data.announcements;
-            } else if (data.results && Array.isArray(data.results)) {
-                announcements = data.results;
-            } else if (data.data && Array.isArray(data.data)) {
-                announcements = data.data;
-            }
-
-            if (announcements.length === 0) {
-                announcementsList.innerHTML = `
-                    <div class="no-announcements">
-                        <h3>🎉 No Announcements</h3>
-                        <p>There are no announcements at the moment. Check back later!</p>
-                    </div>
-                `;
-                return;
-            }
-
-            announcements.forEach(announcement => {
-                const announcementDiv = document.createElement('div');
-                announcementDiv.className = 'announcement';
-                
-                // Handle different field names in the response
-                const title = announcement.title || announcement.name || 'Announcement';
-                const content = announcement.content || announcement.message || announcement.description || 'No content available';
-                const createdAt = announcement.created_at || announcement.date || announcement.timestamp || new Date().toISOString();
-                const isImportant = announcement.is_important || announcement.important || announcement.priority === 'high';
-
-                const date = new Date(createdAt).toLocaleDateString('en-US', {
-                    year: 'numeric',
-                    month: 'long',
-                    day: 'numeric',
-                    hour: '2-digit',
-                    minute: '2-digit'
-                });
-                
-                announcementDiv.innerHTML = `
-                    <div class="announcement-title">
-                        ${title}
-                        ${isImportant ? '<span class="badge">❗ Important</span>' : ''}
-                    </div>
-                    <div class="announcement-content">${content}</div>
-                    <div class="announcement-date">📅 ${date}</div>
-                `;
-                
-                announcementsList.appendChild(announcementDiv);
-            });
-        }
-
-        function showSampleAnnouncements() {
-            const announcementsList = document.getElementById('announcementsList');
-            
-            const sampleAnnouncements = [
-                {
-                    title: "Welcome to School!",
-                    content: "We're excited to have you back for the new school year! Remember to bring your books and supplies.",
-                    created_at: new Date().toISOString(),
-                    is_important: true
-                },
-                {
-                    title: "Math Club Meeting",
-                    content: "The Math Club will meet this Friday after school in Room 201. All grade levels welcome!",
-                    created_at: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
-                    is_important: false
-                },
-                {
-                    title: "Library Book Return",
-                    content: "Please remember to return any library books you have from last semester by this Friday.",
-                    created_at: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
-                    is_important: false
-                }
-            ];
-
-            announcementsList.innerHTML = '<div class="announcement"><div class="announcement-title">📝 Sample Announcements</div><div class="announcement-content">These are sample announcements. Your actual announcements will appear here once the API is configured.</div></div>';
-            
-            displayAnnouncements(sampleAnnouncements);
-        }
-
-        // Load announcements when page loads
-        document.addEventListener('DOMContentLoaded', loadAnnouncements);
-    </script>
-</body>
-</html>
+</div>
+{% endblock %}

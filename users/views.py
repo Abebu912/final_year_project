@@ -13,7 +13,9 @@ from rest_framework import status
 from .models import User, StudentProfile, TeacherProfile, ParentProfile, StudentParent
 from subjects.models import Subject, Enrollment
 from payments.models import Payment
-from notifications.models import Announcement
+from notifications.models import Announcement, Notification
+from django.core.mail import EmailMultiAlternatives
+from django.template.loader import render_to_string
 from django.contrib.auth.views import PasswordResetView, PasswordResetDoneView
 from django.conf import settings
 
@@ -206,11 +208,17 @@ def dashboard(request):
     
     pending_approvals = User.objects.filter(is_approved=False).count()
     
+    # Get unread notifications for the user
+    unread_notifications = Notification.objects.filter(user=user, is_read=False).order_by('-created_at')[:5]
+    unread_count = Notification.objects.filter(user=user, is_read=False).count()
+    
     context = {
         'total_students': total_students,
         'total_teachers': total_teachers,
         'total_subjects': total_subjects,
         'pending_approvals': pending_approvals,
+        'unread_notifications': unread_notifications,
+        'unread_count': unread_count,
     }
     
     return render(request, 'dashboard.html', context)
@@ -460,7 +468,18 @@ def compute_numeric_scores(student, enrollments):
     for enrollment in enrollments:
         score = rank_scores.get(enrollment.subject_id)
         if score is None:
-            score = letter_grade_to_numeric(getattr(enrollment, 'final_grade', None))
+            # First check enrollment.result field for numeric value
+            result_val = getattr(enrollment, 'result', None)
+            if result_val:
+                try:
+                    # Try to parse as numeric
+                    score = float(result_val)
+                except (ValueError, TypeError):
+                    # If not numeric, fall back to letter grade conversion
+                    score = letter_grade_to_numeric(getattr(enrollment, 'final_grade', None))
+            else:
+                # Fall back to letter grade conversion
+                score = letter_grade_to_numeric(getattr(enrollment, 'final_grade', None))
         if score is not None:
             score = float(score)
             total += score
@@ -992,15 +1011,127 @@ def post_announcement(request):
         title = request.POST.get('title')
         content = request.POST.get('content')
         target_roles = request.POST.getlist('target_roles')
+        is_active = request.POST.get('is_active') == 'on'
+        send_email = request.POST.get('send_email') == 'on'
+        
+        # Handle "all" option - if "all" is selected, use empty list (means show to everyone)
+        if 'all' in target_roles:
+            target_roles = []  # Empty list means show to all users
         
         announcement = Announcement.objects.create(
             title=title,
             content=content,
             created_by=request.user,
-            target_roles=target_roles
+            target_roles=target_roles,
+            is_active=is_active
         )
         
-        messages.success(request, 'Announcement posted successfully!')
+        # Get all users who should receive this announcement
+        # If target_roles is empty (all selected), get all active users
+        # Otherwise, filter by the selected roles
+        if target_roles and len(target_roles) > 0:
+            recipients = User.objects.filter(role__in=target_roles, is_active=True)
+        else:
+            # Empty list means all users
+            recipients = User.objects.filter(is_active=True)
+        
+        # Create notifications and send emails
+        notifications_created = 0
+        emails_sent = 0
+        emails_failed = 0
+        
+        from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'noreply@localhost')
+        site_name = getattr(settings, 'SITE_NAME', 'SIMS')
+        
+        print(f"\n=== POSTING ANNOUNCEMENT ===")
+        print(f"Title: {title}")
+        print(f"Target roles: {target_roles}")
+        print(f"Send email: {send_email}")
+        print(f"Total recipients: {recipients.count()}")
+        print(f"From email: {from_email}")
+        
+        for user in recipients:
+            # Create notification for each user
+            try:
+                # Check if notification already exists to avoid duplicates
+                notification, created = Notification.objects.get_or_create(
+                    user=user,
+                    title=title,
+                    message=content,
+                    defaults={'link': f'/announcements/'}
+                )
+                if created:
+                    notifications_created += 1
+            except Exception as e:
+                print(f"Failed to create notification for {user.username}: {e}")
+                import traceback
+                traceback.print_exc()
+            
+            # Send email if requested and user has email
+            if send_email:
+                if not user.email:
+                    print(f"⚠ User {user.username} has no email address, skipping email")
+                    continue
+                try:
+                    subject = f"[{site_name}] {title}"
+                    # Format content properly - replace newlines with <br> for HTML
+                    formatted_content = content.replace('\n', '<br>').replace('\r', '')
+                    text_content = f"{content}\n\nPosted on {announcement.created_at.strftime('%B %d, %Y at %H:%M')}\n\n---\n{site_name}"
+                    html_content = f"""
+                    <html>
+                    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                        <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+                            <h2 style="color: #2c3e50; border-bottom: 2px solid #3498db; padding-bottom: 10px;">{title}</h2>
+                            <div style="margin: 20px 0;">
+                                {formatted_content}
+                            </div>
+                            <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
+                            <p style="color: #7f8c8d; font-size: 12px;">
+                                Posted on {announcement.created_at.strftime('%B %d, %Y at %H:%M')}<br>
+                                ---<br>
+                                {site_name}
+                            </p>
+                        </div>
+                    </body>
+                    </html>
+                    """
+                    msg = EmailMultiAlternatives(subject, text_content, from_email, [user.email])
+                    msg.attach_alternative(html_content, "text/html")
+                    # Try to send email - first with fail_silently=False to see errors
+                    try:
+                        result = msg.send(fail_silently=False)
+                        emails_sent += 1
+                        print(f"✓ Email sent successfully to {user.email} ({user.get_full_name()})")
+                    except Exception as send_error:
+                        emails_failed += 1
+                        print(f"✗ SMTP Error sending to {user.email}: {send_error}")
+                        # Try with fail_silently=True as fallback
+                        try:
+                            msg.send(fail_silently=True)
+                            print(f"  (Retried silently)")
+                        except:
+                            pass
+                except Exception as e:
+                    emails_failed += 1
+                    print(f"✗ Exception preparing email for {user.email}: {e}")
+                    import traceback
+                    traceback.print_exc()
+        
+        print(f"\n=== ANNOUNCEMENT POSTING SUMMARY ===")
+        print(f"Notifications created: {notifications_created}")
+        print(f"Emails sent: {emails_sent}")
+        print(f"Emails failed: {emails_failed}")
+        print(f"=====================================\n")
+        
+        success_msg = f'Announcement posted successfully!'
+        if notifications_created > 0:
+            success_msg += f' Notifications created: {notifications_created}.'
+        if send_email:
+            success_msg += f' Emails sent: {emails_sent}'
+            if emails_failed > 0:
+                success_msg += f' (Failed: {emails_failed} - check console/terminal for details)'
+        
+        messages.success(request, success_msg)
         return redirect('admin_panel')
     
     context = {
@@ -1059,9 +1190,15 @@ def is_registrar(user):
 @user_passes_test(is_registrar)
 def registrar_dashboard(request):
     """Registrar dashboard view"""
+    # Get unread notifications for the registrar
+    unread_notifications = Notification.objects.filter(user=request.user, is_read=False).order_by('-created_at')[:5]
+    unread_count = Notification.objects.filter(user=request.user, is_read=False).count()
+    
     context = {
         'page_title': 'Registrar Dashboard',
         'user': request.user,
+        'unread_notifications': unread_notifications,
+        'unread_count': unread_count,
     }
     return render(request, 'registrar/dashboard.html', context)
 # users/views.py or registrar/views.py
@@ -1348,19 +1485,45 @@ def student_academic_record(request, student_id):
 @login_required
 @user_passes_test(is_registrar)
 def update_grade(request, enrollment_id):
-    """Update final grade for a student's enrollment"""
+    """Update grade/score for a student's enrollment - accepts numerical values (0-100)"""
     enrollment = get_object_or_404(Enrollment, id=enrollment_id)
     
     if request.method == 'POST':
-        final_grade = request.POST.get('final_grade', '').upper().strip()
+        grade_input = request.POST.get('final_grade', '').strip()
         
-        if final_grade in ['A', 'B', 'C', 'D', 'F']:
-            enrollment.final_grade = final_grade
+        if not grade_input:
+            messages.error(request, "Please enter a score.")
+            return redirect('student_academic_record', student_id=enrollment.student.id)
+        
+        # Try to parse as numeric score (0-100)
+        try:
+            score = float(grade_input)
+            # Clamp score to valid range
+            if score < 0:
+                score = 0
+            elif score > 100:
+                score = 100
+            
+            # Update RankGrade if available
+            if RankGrade is not None:
+                grade_obj, created = RankGrade.objects.get_or_create(
+                    student=enrollment.student,
+                    subject=enrollment.subject,
+                    defaults={'score': int(score)}
+                )
+                if not created:
+                    grade_obj.score = int(score)
+                    grade_obj.save()
+            
+            # Store numeric score in enrollment.result field
+            enrollment.result = str(int(score))
+            # Also store in final_grade for backward compatibility (as string representation)
+            enrollment.final_grade = str(int(score))
             enrollment.save()
             
-            messages.success(request, f"Updated grade for {enrollment.student.username} in {enrollment.subject.name} to {final_grade}")
-        else:
-            messages.error(request, "Invalid grade. Please use A, B, C, D, or F.")
+            messages.success(request, f"Updated score for {enrollment.student.username} in {enrollment.subject.name} to {int(score)}")
+        except ValueError:
+            messages.error(request, "Invalid score. Please enter a numerical value between 0 and 100.")
     
     return redirect('student_academic_record', student_id=enrollment.student.id)
 
@@ -1410,7 +1573,19 @@ def generate_transcript(request, student_id):
             messages.error(request, "Database schema for ranks not found. Run `python manage.py migrate ranks`.")
             return redirect('manage_academic_records')
 
-        # If numeric score not available, try to derive from enrollment.final_grade
+        # If numeric score not available, check enrollment.result field
+        if numeric_score is None:
+            result_val = getattr(enrollment, 'result', None)
+            if result_val:
+                try:
+                    numeric_score = float(result_val)
+                except (ValueError, TypeError):
+                    pass
+
+        # If still not available, try to derive from enrollment.final_grade (for backward compatibility)
+        if numeric_score is None:
+            numeric_score = letter_grade_to_numeric(getattr(enrollment, 'final_grade', None))
+        
         letter_grade = enrollment.final_grade
         transcripts_by_year[key].append({
             'subject': enrollment.subject,
@@ -1453,12 +1628,34 @@ def generate_transcript(request, student_id):
     
     # Compute numeric average (out of 100) using ranks.calculate_student_average if available
     numeric_average = None
+    total_result = 0.0
+    graded_count = 0
     try:
         if RankGrade is not None:
             numeric_average = calculate_student_average(student)
+            # Calculate total result from all numeric scores
+            for enrollment, numeric_score in detailed_rows:
+                if numeric_score is not None:
+                    total_result += numeric_score
+                    graded_count += 1
+        else:
+            # Fallback: calculate from enrollments directly
+            for enrollment, numeric_score in detailed_rows:
+                if numeric_score is not None:
+                    total_result += numeric_score
+                    graded_count += 1
+            if graded_count > 0:
+                numeric_average = total_result / graded_count
     except OperationalError:
         # missing ranks table
         numeric_average = None
+        # Calculate from enrollments directly
+        for enrollment, numeric_score in detailed_rows:
+            if numeric_score is not None:
+                total_result += numeric_score
+                graded_count += 1
+        if graded_count > 0:
+            numeric_average = total_result / graded_count
 
     # Compute student's rank among peers in same grade (by numeric average)
     student_rank = None
@@ -1492,7 +1689,8 @@ def generate_transcript(request, student_id):
         'transcripts_by_year': transcripts_by_year,
         'total_credits': total_credits,
         'cumulative_gpa': round(cumulative_gpa, 2),
-        'numeric_average': numeric_average,
+        'numeric_average': round(numeric_average, 2) if numeric_average is not None else None,
+        'total_result': round(total_result, 2) if total_result > 0 else None,
         'student_rank': student_rank,
     }
     
