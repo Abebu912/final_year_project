@@ -1,0 +1,74 @@
+{% extends 'base.html' %}
+{% block title %}Assign Subjects - Registrar{% endblock %}
+{% block content %}
+<div class="container py-4">
+  <h3>Assign Subjects to Teacher</h3>
+  <p class="text-muted">Select a teacher and assign subjects by grade level / term.</p>
+
+  <form method="get" class="row g-2 mb-3">
+    <div class="col-auto">
+      <input type="number" name="grade_level" class="form-control" placeholder="Grade level" min="1" max="12" value="{{ filter_grade_level }}">
+    </div>
+    <div class="col-auto">
+      <input type="text" name="academic_year" class="form-control" placeholder="Academic year (e.g. 2025-2026)" value="{{ filter_academic_year }}">
+    </div>
+    <div class="col-auto">
+      <select name="semester" class="form-select">
+        <option value="">-- Semester (optional) --</option>
+        <option value="first" {% if filter_semester == 'first' %}selected{% endif %}>First</option>
+        <option value="second" {% if filter_semester == 'second' %}selected{% endif %}>Second</option>
+      </select>
+    </div>
+    <div class="col-auto">
+      <button class="btn btn-outline-secondary">Filter</button>
+    </div>
+  </form>
+
+  <form method="post">
+    {% csrf_token %}
+    <div class="row">
+      <div class="col-md-4">
+        <label class="form-label">Select Teacher</label>
+        <select name="teacher_user_id" class="form-select" required>
+          <option value="">-- Choose Teacher --</option>
+          {% for t in teachers %}
+            <option value="{{ t.id }}">{{ t.get_full_name|default:t.username }}</option>
+          {% endfor %}
+        </select>
+        <div class="mt-2">
+          <label class="form-label small">Academic Year <span class="text-danger">*</span></label>
+          <input type="text" name="academic_year" class="form-control" placeholder="e.g. 2025-2026" required value="{{ filter_academic_year }}">
+        </div>
+        <div class="mt-2">
+          <label class="form-label small">Semester <span class="text-danger">*</span></label>
+          <select name="semester" class="form-select" required>
+            <option value="">-- Select Semester --</option>
+            <option value="first" {% if filter_semester == 'first' %}selected{% endif %}>First</option>
+            <option value="second" {% if filter_semester == 'second' %}selected{% endif %}>Second</option>
+          </select>
+        </div>
+      </div>
+      <div class="col-md-8">
+        <label class="form-label">Available Subjects</label>
+        <div class="list-group mb-2">
+          {% for s in available_subjects %}
+            <label class="list-group-item">
+              <input type="checkbox" name="subject_ids" value="{{ s.id }}" class="form-check-input me-2"> <strong>{{ s.code }}</strong> - {{ s.name }} <span class="text-muted">(Grade {{ s.grade_level }})</span>
+            </label>
+          {% empty %}
+            <div class="list-group-item">No available subjects for the selected filters.</div>
+          {% endfor %}
+        </div>
+        <div class="form-check mb-2">
+          <input class="form-check-input" type="checkbox" name="assign_all" value="1" id="assign_all">
+          <label class="form-check-label" for="assign_all">Assign all available subjects (ignore individual selection)</label>
+        </div>
+      </div>
+    </div>
+    <div class="mt-3">
+      <button class="btn btn-primary">Assign Selected Subjects</button>
+      <a href="{% url 'registrar_dashboard' %}" class="btn btn-outline-secondary ms-2">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

@@ -2,7 +2,7 @@ from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
 from django.db.models import Q, Count
 from django.db.models import Avg
-from users.decorators import teacher_required
+from users.decorators import teacher_required, registrar_required
 from users.models import User
 from subjects.models import Subject, Enrollment
 from ranks.models import Grade, rank_students_for_subject
@@ -97,12 +97,13 @@ def enroll_students_for_subject(subject, academic_year=None, semester=None, stat
 def teacher_dashboard(request):
     # annotate each subject with the number of approved students
     # count students with status 'approved' or 'active'
-    teacher_subjects = Subject.objects.filter(instructor__user=request.user, is_active=True).annotate(
+    teacher_subjects = Subject.objects.filter(instructor__user=request.user, is_active=True, assigned_by_registrar=True).annotate(
         student_count=Count('enrollments', filter=Q(enrollments__status__in=['approved', 'active']))
     )
 
     total_students = Enrollment.objects.filter(
         subject__instructor__user=request.user,
+        subject__assigned_by_registrar=True,
         status__in=['approved', 'active']
     ).count()
 
@@ -151,7 +152,12 @@ def teacher_dashboard(request):
     )
 
     # distinct students across this teacher's subjects
-    enrolled_qs = Enrollment.objects.filter(subject__in=teacher_subjects, status__in=['approved', 'active']).select_related('student')
+    # Respect academic year / semester filters when listing students
+    current_year = _get_current_academic_year()
+    current_sem = _get_current_semester()
+    ay = request.GET.get('academic_year') or current_year
+    sem = request.GET.get('semester') or current_sem
+    enrolled_qs = Enrollment.objects.filter(subject__in=teacher_subjects, status__in=['approved', 'active'], academic_year=ay, semester=sem).select_related('student')
     distinct_students = {}
     for en in enrolled_qs:
         distinct_students[en.student.id] = en.student
@@ -203,31 +209,44 @@ def teacher_dashboard(request):
     }
     return render(request, 'teachers/teacher_dashboard.html', context)
 
-@teacher_required
+@registrar_required
 def claim_subject(request, subject_id):
-    """Allow a teacher to claim/assign themselves as the instructor for a subject."""
-    subject = get_object_or_404(Subject, id=subject_id)
-    try:
-        teacher_obj = get_teacher_profile(request.user)
-    except Exception:
-        messages.error(request, 'No teacher profile found for your account. Please contact admin.')
-        return redirect('teacher_dashboard')
+    """Registrar-only: assign a subject to a teacher.
 
-    # Assign and save
+    POST params: teacher_user_id (user id of teacher)
+    """
+    if request.method != 'POST':
+        messages.error(request, 'Invalid request method for assigning subjects.')
+        return redirect('registrar_dashboard')
+
+    subject = get_object_or_404(Subject, id=subject_id)
+    teacher_user_id = request.POST.get('teacher_user_id')
+    if not teacher_user_id:
+        messages.error(request, 'No teacher specified for assignment.')
+        return redirect('registrar_dashboard')
+
+    try:
+        from subjects.models import Teacher as TeacherModel
+        teacher_user = User.objects.get(id=int(teacher_user_id), role='teacher')
+        teacher_obj, created = TeacherModel.objects.get_or_create(user=teacher_user, defaults={'teacher_id': f'T{teacher_user.id}', 'department': ''})
+    except Exception:
+        messages.error(request, 'Teacher not found. Cannot assign subject.')
+        return redirect('registrar_dashboard')
+
     subject.instructor = teacher_obj
     subject.save()
-    # auto-enroll students of the subject grade for current term
     try:
         enrolled = enroll_students_for_subject(subject)
         if enrolled:
             messages.info(request, f'Auto-enrolled {enrolled} students for {subject.code}.')
     except Exception:
         pass
-    messages.success(request, f'Subject {subject.code} assigned to you.')
-    return redirect('teacher_dashboard')
+
+    messages.success(request, f'Subject {subject.code} assigned to {teacher_user.get_full_name()}.')
+    return redirect('registrar_dashboard')
 
 
-@teacher_required
+@registrar_required
 @require_POST
 def assign_subjects_for_term(request):
     """Bulk assign subjects to the logged-in teacher for a given grade/term.
@@ -244,10 +263,19 @@ def assign_subjects_for_term(request):
     academic_year = form.cleaned_data['academic_year']
     semester = form.cleaned_data['semester']
 
-    teacher_obj = get_teacher_profile(request.user)
-    if not teacher_obj:
-        messages.error(request, 'No teacher profile found for your account. Please contact admin.')
-        return redirect('teacher_dashboard')
+    # Registrar must provide the teacher_user_id in POST
+    teacher_user_id = request.POST.get('teacher_user_id')
+    if not teacher_user_id:
+        messages.error(request, 'Please specify a teacher to assign these subjects to.')
+        return redirect('registrar_dashboard')
+
+    try:
+        from subjects.models import Teacher as TeacherModel
+        teacher_user = User.objects.get(id=int(teacher_user_id), role='teacher')
+        teacher_obj, created = TeacherModel.objects.get_or_create(user=teacher_user, defaults={'teacher_id': f'T{teacher_user.id}', 'department': ''})
+    except Exception:
+        messages.error(request, 'Teacher not found. Cannot assign subjects.')
+        return redirect('registrar_dashboard')
 
     # Find subjects for this grade level and term (term info is not on Subject model,
     # so we filter by grade_level and is_active and only assign if instructor is None)
@@ -274,11 +302,11 @@ def assign_subjects_for_term(request):
             pass
         assigned += 1
 
-    messages.success(request, f'Assigned {assigned} subjects for Grade {grade_level} ({academic_year} - {semester}).')
-    return redirect('teacher_dashboard')
+    messages.success(request, f'Assigned {assigned} subjects for Grade {grade_level} ({academic_year} - {semester}) to {teacher_user.get_full_name()}.')
+    return redirect('registrar_dashboard')
 
 
-@teacher_required
+@registrar_required
 @require_POST
 def assign_selected_subjects(request):
     """Assign the list of subject IDs posted by the teacher to themselves.
@@ -290,10 +318,19 @@ def assign_selected_subjects(request):
         messages.error(request, 'No subjects selected to assign.')
         return redirect('teacher_dashboard')
 
-    teacher_obj = get_teacher_profile(request.user)
-    if not teacher_obj:
-        messages.error(request, 'No teacher profile found for your account. Please contact admin.')
-        return redirect('teacher_dashboard')
+    # Registrar must provide teacher_user_id
+    teacher_user_id = request.POST.get('teacher_user_id')
+    if not teacher_user_id:
+        messages.error(request, 'Please specify a teacher to assign these subjects to.')
+        return redirect('registrar_dashboard')
+
+    try:
+        from subjects.models import Teacher as TeacherModel
+        teacher_user = User.objects.get(id=int(teacher_user_id), role='teacher')
+        teacher_obj, created = TeacherModel.objects.get_or_create(user=teacher_user, defaults={'teacher_id': f'T{teacher_user.id}', 'department': ''})
+    except Exception:
+        messages.error(request, 'Teacher not found. Cannot assign subjects.')
+        return redirect('registrar_dashboard')
 
     # allow optional academic_year/semester in POST to control enrollments
     academic_year = request.POST.get('academic_year') or None
@@ -318,8 +355,8 @@ def assign_selected_subjects(request):
             pass
         assigned += 1
 
-    messages.success(request, f'Assigned {assigned} selected subjects to you.')
-    return redirect('teacher_dashboard')
+    messages.success(request, f'Assigned {assigned} selected subjects to {teacher_user.get_full_name()}.')
+    return redirect('registrar_dashboard')
 
 @teacher_required
 def enter_grades(request):
@@ -332,8 +369,10 @@ def enter_grades(request):
         if subject.instructor and subject.instructor.user != request.user:
             messages.error(request, 'You are not the instructor for the selected subject.')
             return redirect('teacher_dashboard')
-        # include both approved and active enrollments so assigned students appear
-        enrollments = Enrollment.objects.filter(subject=subject, status__in=['approved', 'active']).select_related('student')
+        # Filter enrollments by academic year & semester (default to current)
+        academic_year = request.GET.get('academic_year') or _get_current_academic_year()
+        semester = request.GET.get('semester') or _get_current_semester()
+        enrollments = Enrollment.objects.filter(subject=subject, status__in=['approved', 'active'], academic_year=academic_year, semester=semester).select_related('student')
         
         # load existing grades for this subject to prefill the form
         existing_grades_qs = Grade.objects.filter(subject=subject).select_related('student')
@@ -403,7 +442,7 @@ def enter_grades(request):
 
 @teacher_required
 def class_rosters(request):
-    teacher_subjects = Subject.objects.filter(instructor__user=request.user, is_active=True)
+    teacher_subjects = Subject.objects.filter(instructor__user=request.user, is_active=True, assigned_by_registrar=True)
     selected_subject_id = request.GET.get('subject_id')
     
     if selected_subject_id:
@@ -412,7 +451,9 @@ def class_rosters(request):
         if subject.instructor and subject.instructor.user != request.user:
             messages.error(request, 'You are not the instructor for the selected subject.')
             return redirect('teacher_dashboard')
-        enrollments = Enrollment.objects.filter(subject=subject).select_related('student')
+        academic_year = request.GET.get('academic_year') or _get_current_academic_year()
+        semester = request.GET.get('semester') or _get_current_semester()
+        enrollments = Enrollment.objects.filter(subject=subject, academic_year=academic_year, semester=semester, status__in=['approved', 'active']).select_related('student')
     else:
         subject = None
         enrollments = []
@@ -426,7 +467,7 @@ def class_rosters(request):
 
 @teacher_required
 def performance_reports(request):
-    teacher_subjects = Subject.objects.filter(instructor__user=request.user, is_active=True)
+    teacher_subjects = Subject.objects.filter(instructor__user=request.user, is_active=True, assigned_by_registrar=True)
     selected_subject_id = request.GET.get('subject_id')
     
     if selected_subject_id:
@@ -434,7 +475,10 @@ def performance_reports(request):
         if subject.instructor and subject.instructor.user != request.user:
             messages.error(request, 'You are not the instructor for the selected subject.')
             return redirect('teacher_dashboard')
+        academic_year = request.GET.get('academic_year') or _get_current_academic_year()
+        semester = request.GET.get('semester') or _get_current_semester()
         try:
+            # Grades may be stored per subject; filter by enrollments for term if necessary
             grades = Grade.objects.filter(subject=subject).select_related('student')
         except OperationalError:
             messages.error(request, 'Database tables for the `ranks` app are missing. Please run `python manage.py migrate`.')
@@ -521,10 +565,15 @@ def view_student_performance(request, student_id):
     student = get_object_or_404(User, id=student_id, role='student')
     
     # Get subjects taught by this teacher that the student is enrolled in
+    academic_year = request.GET.get('academic_year') or _get_current_academic_year()
+    semester = request.GET.get('semester') or _get_current_semester()
     student_courses = Subject.objects.filter(
         instructor__user=request.user,
+        assigned_by_registrar=True,
         enrollments__student=student,
-        enrollments__status='approved'
+        enrollments__status='approved',
+        enrollments__academic_year=academic_year,
+        enrollments__semester=semester,
     ).distinct()
     
     # Get grades for these courses

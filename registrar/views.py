@@ -6,7 +6,10 @@ from users.decorators import registrar_required
 from users.models import User, StudentProfile
 from subjects.models import Subject, Enrollment
 from ranks.models import Grade, calculate_student_average
+from teachers.views import enroll_students_for_subject
 from django.db.utils import OperationalError
+from notifications.models import Notification
+from django.core.mail import send_mail
 import csv
 import io
 # ReportLab is an optional dependency used to generate PDF transcripts.
@@ -250,6 +253,119 @@ def generate_transcripts(request):
         },
     }
     return render(request, 'registrar/generate_transcripts.html', context)
+
+
+@registrar_required
+def assign_subjects_to_teacher(request):
+    """Registrar view: assign subjects to a teacher.
+
+    GET: show form with teachers and available subjects (filter by grade/term)
+    POST: assign selected subject ids or assign all unassigned subjects for a grade/term to the teacher
+    """
+    from subjects.models import Subject, Teacher as TeacherModel
+
+    teachers = User.objects.filter(role='teacher').order_by('username')
+
+    # Filters
+    grade_level = request.GET.get('grade_level')
+    academic_year = request.GET.get('academic_year')
+    semester = request.GET.get('semester')
+
+    # Clean up any subjects that were self-assigned by teachers (not assigned by registrar)
+    # We will unset the instructor for those subjects so only registrar-assigned subjects remain.
+    try:
+        self_assigned = Subject.objects.filter(instructor__isnull=False, assigned_by_registrar=False)
+        for s in self_assigned:
+            s.instructor = None
+            s.save()
+    except Exception:
+        pass
+
+    available_qs = Subject.objects.filter(instructor__isnull=True, is_active=True)
+    if grade_level:
+        try:
+            available_qs = available_qs.filter(grade_level=int(grade_level))
+        except Exception:
+            pass
+
+    available_subjects = available_qs.order_by('grade_level', 'code')
+
+    if request.method == 'POST':
+        teacher_user_id = request.POST.get('teacher_user_id')
+        subject_ids = request.POST.getlist('subject_ids')
+        assign_all = request.POST.get('assign_all') == '1'
+
+        if not teacher_user_id:
+            messages.error(request, 'Please select a teacher to assign to.')
+            return redirect('assign_subjects_to_teacher')
+
+        try:
+            teacher_user = User.objects.get(id=int(teacher_user_id), role='teacher')
+            teacher_obj, created = TeacherModel.objects.get_or_create(user=teacher_user, defaults={'teacher_id': f'T{teacher_user.id}', 'department': ''})
+        except Exception:
+            messages.error(request, 'Teacher not found.')
+            return redirect('assign_subjects_to_teacher')
+
+        assigned = 0
+        if assign_all:
+            subjects_to_assign = available_qs
+        else:
+            subjects_to_assign = Subject.objects.filter(id__in=subject_ids, instructor__isnull=True)
+
+        # Require academic_year and semester for assignment
+        post_academic_year = request.POST.get('academic_year')
+        post_semester = request.POST.get('semester')
+        if not post_academic_year or not post_semester:
+            messages.error(request, 'Academic year and semester are required to assign subjects.')
+            return redirect('assign_subjects_to_teacher')
+
+        for subj in subjects_to_assign:
+            subj.instructor = teacher_obj
+            subj.assigned_by_registrar = True
+            subj.save()
+            try:
+                # auto-enroll students for provided academic_year/semester
+                enroll_students_for_subject(subj, academic_year=post_academic_year, semester=post_semester, status='approved')
+            except Exception:
+                pass
+
+            # create a notification for the teacher
+            try:
+                Notification.objects.create(
+                    user=teacher_user,
+                    title='Subject Assignment',
+                    message=f'You have been assigned to teach {subj.code} - {subj.name} for {post_academic_year} ({post_semester}).',
+                    link=f'/teachers/enter-grades/?subject_id={subj.id}'
+                )
+            except Exception:
+                pass
+
+            # send an email to the teacher (best-effort)
+            try:
+                if teacher_user.email:
+                    send_mail(
+                        subject=f'Subject assigned: {subj.code}',
+                        message=f'Hello {teacher_user.get_full_name() or teacher_user.username},\n\nYou have been assigned to teach {subj.name} ({subj.code}) for {post_academic_year} - {post_semester}.\n\nPlease login to the system to view your classes and enter results.\n',
+                        from_email=None,
+                        recipient_list=[teacher_user.email],
+                        fail_silently=True,
+                    )
+            except Exception:
+                pass
+
+            assigned += 1
+
+        messages.success(request, f'Assigned {assigned} subjects to {teacher_user.get_full_name()}.')
+        return redirect('registrar_dashboard')
+
+    context = {
+        'teachers': teachers,
+        'available_subjects': available_subjects,
+        'filter_grade_level': grade_level,
+        'filter_academic_year': academic_year,
+        'filter_semester': semester,
+    }
+    return render(request, 'registrar/assign_subjects.html', context)
 
 def generate_csv_transcript(student, grades):
     response = HttpResponse(content_type='text/csv')
