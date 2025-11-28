@@ -95,16 +95,32 @@ def enroll_students_for_subject(subject, academic_year=None, semester=None, stat
 
 @teacher_required
 def teacher_dashboard(request):
-    # annotate each subject with the number of approved students
-    # count students with status 'approved' or 'active'
-    teacher_subjects = Subject.objects.filter(instructor__user=request.user, is_active=True, assigned_by_registrar=True).annotate(
-        student_count=Count('enrollments', filter=Q(enrollments__status__in=['approved', 'active']))
+    # allow optional filtering by grade_level, academic_year and semester via GET params
+    grade_level_filter = request.GET.get('grade_level')
+    academic_year_filter = request.GET.get('academic_year')
+    semester_filter = request.GET.get('semester')
+    # default to current term when not provided
+    if not academic_year_filter:
+        academic_year_filter = _get_current_academic_year()
+    if not semester_filter:
+        semester_filter = _get_current_semester()
+
+    # annotate each subject (assigned to this teacher) with the number of approved/active students for the selected term
+    teacher_qs = Subject.objects.filter(instructor__user=request.user, is_active=True)
+    if grade_level_filter:
+        try:
+            teacher_qs = teacher_qs.filter(grade_level=int(grade_level_filter))
+        except Exception:
+            pass
+    teacher_subjects = teacher_qs.annotate(
+        student_count=Count('enrollments', filter=Q(enrollments__status__in=['approved', 'active'], enrollments__academic_year=academic_year_filter, enrollments__semester=semester_filter))
     )
 
     total_students = Enrollment.objects.filter(
         subject__instructor__user=request.user,
-        subject__assigned_by_registrar=True,
-        status__in=['approved', 'active']
+        status__in=['approved', 'active'],
+        academic_year=academic_year_filter,
+        semester=semester_filter
     ).count()
 
     # pending scores across all subjects for this teacher
@@ -129,11 +145,6 @@ def teacher_dashboard(request):
         s.pending_count = per_subject_pending.get(s.id, 0)
 
     # subjects that are currently unassigned (available for claiming)
-    # allow optional filtering by grade_level, academic_year and semester via GET params
-    grade_level_filter = request.GET.get('grade_level')
-    academic_year_filter = request.GET.get('academic_year')
-    semester_filter = request.GET.get('semester')
-
     available_qs = Subject.objects.filter(instructor__isnull=True, is_active=True)
     if grade_level_filter:
         try:
@@ -148,15 +159,14 @@ def teacher_dashboard(request):
         available_qs = available_qs.filter(semester__iexact=semester_filter)
 
     available_subjects = available_qs.annotate(
-        student_count=Count('enrollments', filter=Q(enrollments__status='approved'))
+        student_count=Count('enrollments', filter=Q(enrollments__status__in=['approved','active'], enrollments__academic_year=academic_year_filter, enrollments__semester=semester_filter))
     )
 
     # distinct students across this teacher's subjects
     # Respect academic year / semester filters when listing students
-    current_year = _get_current_academic_year()
-    current_sem = _get_current_semester()
-    ay = request.GET.get('academic_year') or current_year
-    sem = request.GET.get('semester') or current_sem
+    # use the already-determined filters for term
+    ay = academic_year_filter
+    sem = semester_filter
     enrolled_qs = Enrollment.objects.filter(subject__in=teacher_subjects, status__in=['approved', 'active'], academic_year=ay, semester=sem).select_related('student')
     distinct_students = {}
     for en in enrolled_qs:
@@ -165,7 +175,12 @@ def teacher_dashboard(request):
     # compute per-student average across this teacher's subjects
     student_averages = {}
     for student_id, student in distinct_students.items():
-        avg = Grade.objects.filter(student__id=student_id, subject__in=teacher_subjects).aggregate(avg=Avg('score'))['avg']
+        # restrict averaging to this term: find which of the teacher's subjects this student is enrolled in for the term
+        subject_ids_for_term = Enrollment.objects.filter(student__id=student_id, subject__in=teacher_subjects, academic_year=ay, semester=sem, status__in=['approved', 'active']).values_list('subject_id', flat=True)
+        if subject_ids_for_term:
+            avg = Grade.objects.filter(student__id=student_id, subject__id__in=subject_ids_for_term).aggregate(avg=Avg('score'))['avg']
+        else:
+            avg = None
         student_averages[student_id] = {'student': student, 'average': round(avg, 2) if avg is not None else None}
 
     # compute ranking (higher average -> better rank). Students with None average go last.
@@ -192,6 +207,22 @@ def teacher_dashboard(request):
     unread_notifications = Notification.objects.filter(user=request.user, is_read=False).order_by('-created_at')[:5]
     unread_count = Notification.objects.filter(user=request.user, is_read=False).count()
     
+    # term filters (prefer GET, else current)
+    academic_year = request.GET.get('academic_year') or _get_current_academic_year()
+    semester = request.GET.get('semester') or _get_current_semester()
+
+    # grade choices (use Subject model choices) and academic year choices for the filter UI
+    try:
+        grade_choices = Subject.GRADE_LEVEL_CHOICES
+    except Exception:
+        grade_choices = []
+
+    try:
+        cur_start = int(_get_current_academic_year().split('-')[0])
+        academic_year_choices = [f"{y}-{y+1}" for y in range(cur_start - 3, cur_start + 1)]
+    except Exception:
+        academic_year_choices = [academic_year]
+
     context = {
         'teacher_subjects': teacher_subjects,
         'total_students': total_students,
@@ -200,10 +231,17 @@ def teacher_dashboard(request):
         'filter_grade_level': grade_level_filter,
         'filter_academic_year': academic_year_filter,
         'filter_semester': semester_filter,
+        'display_academic_year': academic_year_filter,
+        'display_semester': semester_filter,
+        'grade_choices': grade_choices,
+        'academic_year_choices': academic_year_choices,
+        'selected_grade_level': grade_level_filter,
+        'selected_academic_year': academic_year,
+        'selected_semester': semester,
+        'num_subjects': teacher_subjects.count(),
         'distinct_student_count': len(distinct_students),
         'student_averages': student_averages,
         'student_ranking': ranked,
-        'subject_averages': subject_averages,
         'unread_notifications': unread_notifications,
         'unread_count': unread_count,
     }
@@ -258,7 +296,6 @@ def assign_subjects_for_term(request):
     if not form.is_valid():
         messages.error(request, 'Invalid input for bulk assignment.')
         return redirect('teacher_dashboard')
-
     grade_level = form.cleaned_data['grade_level']
     academic_year = form.cleaned_data['academic_year']
     semester = form.cleaned_data['semester']
@@ -377,54 +414,154 @@ def enter_grades(request):
         # load existing grades for this subject to prefill the form
         existing_grades_qs = Grade.objects.filter(subject=subject).select_related('student')
         existing_grades = {g.student.id: g.score for g in existing_grades_qs}
-        # attach current_score to enrollment objects for easy template access
+        existing_components = {}
+        for g in existing_grades_qs:
+            existing_components[g.student.id] = {
+                'quiz': getattr(g, 'quiz_score', None),
+                'mid': getattr(g, 'mid_score', None),
+                'assignment': getattr(g, 'assignment_score', None),
+                'final': getattr(g, 'final_exam_score', None),
+            }
+        # attach component values and current_score to enrollment objects for easy template access
         for en in enrollments:
             en.current_score = existing_grades.get(en.student.id)
+            comps = existing_components.get(en.student.id, {})
+            en.quiz_score = comps.get('quiz')
+            en.mid_score = comps.get('mid')
+            en.assignment_score = comps.get('assignment')
+            en.final_score = comps.get('final')
+
+        # compute per-student average across this teacher's subjects for the selected term
+        student_ids = [en.student.id for en in enrollments]
+        student_averages = {}
+        try:
+            for sid in student_ids:
+                subj_ids = Enrollment.objects.filter(student__id=sid, subject__in=teacher_subjects, academic_year=academic_year, semester=semester, status__in=['approved','active']).values_list('subject_id', flat=True)
+                if subj_ids:
+                    avg = Grade.objects.filter(student__id=sid, subject__id__in=subj_ids).aggregate(avg=Avg('score'))['avg']
+                else:
+                    avg = None
+                student_averages[sid] = round(avg,2) if avg is not None else None
+        except Exception:
+            student_averages = {sid: None for sid in student_ids}
+
+        # compute ranking for students by their average (higher is better); ties receive same rank
+        ranking = []
+        for sid, avg in student_averages.items():
+            ranking.append({'student_id': sid, 'avg': avg})
+        ranking = sorted(ranking, key=lambda x: (-(x['avg'] or -1), x['student_id']))
+        last_avg = None
+        last_rank = 0
+        rank_map = {}
+        idx = 0
+        for item in ranking:
+            idx += 1
+            if item['avg'] is None:
+                rank = None
+            else:
+                if item['avg'] == last_avg:
+                    rank = last_rank
+                else:
+                    rank = idx
+                    last_rank = rank
+                    last_avg = item['avg']
+            rank_map[item['student_id']] = rank
+
+        # attach average and rank to enrollments for template
+        for en in enrollments:
+            en.average = student_averages.get(en.student.id)
+            en.rank = rank_map.get(en.student.id)
 
         if request.method == 'POST':
             updated = 0
             for enrollment in enrollments:
-                grade_value = request.POST.get(f'grade_{enrollment.student.id}')
-                if grade_value is None or grade_value == '':
-                    continue
-                try:
-                    score = int(float(grade_value))
-                except ValueError:
-                    continue
-                # Clamp score to 0-100
-                if score < 0:
-                    score = 0
-                if score > 100:
-                    score = 100
+                    # Support component-based input (quiz, mid, assignment, final)
+                    quiz_val = request.POST.get(f'quiz_{enrollment.student.id}')
+                    mid_val = request.POST.get(f'mid_{enrollment.student.id}')
+                    assign_val = request.POST.get(f'assign_{enrollment.student.id}')
+                    final_val = request.POST.get(f'final_{enrollment.student.id}')
+                    # legacy single score field fallback
+                    grade_value = request.POST.get(f'grade_{enrollment.student.id}')
 
-                try:
-                    grade_obj, created = Grade.objects.get_or_create(
-                        student=enrollment.student,
-                        subject=subject,
-                        defaults={'score': score}
-                    )
-                except OperationalError:
-                    messages.error(request, 'Database tables for the `ranks` app are missing. Please run `python manage.py migrate`.')
-                    return redirect(request.path + f'?subject_id={subject.id}')
+                    # if no inputs provided, skip
+                    if not any([quiz_val, mid_val, assign_val, final_val, grade_value]):
+                        continue
 
-                if not created:
-                    grade_obj.score = score
-                    grade_obj.save()
-                # store remarks/result if provided
-                result_val = request.POST.get(f'result_{enrollment.student.id}')
-                if result_val is not None:
-                    # save into Grade.remarks and Enrollment.result when available
+                    def parse_int(v, default=None):
+                        if v is None or v == '':
+                            return default
+                        try:
+                            return int(float(v))
+                        except Exception:
+                            return default
+
+                    quiz = parse_int(quiz_val)
+                    mid = parse_int(mid_val)
+                    assignment = parse_int(assign_val)
+                    final = parse_int(final_val)
+
+                    override_avg_val = request.POST.get(f'avg_{enrollment.student.id}')
+                    if quiz is None and mid is None and assignment is None and final is None and grade_value:
+                        # legacy path: use single score field
+                        total = parse_int(grade_value, 0)
+                        quiz = mid = assignment = final = None
+                    else:
+                        # if override average provided (teacher manually edited average), use it to set total
+                        if override_avg_val is not None and override_avg_val != '':
+                            parsed_override = parse_int(override_avg_val, None)
+                            if parsed_override is not None:
+                                total = max(0, min(100, parsed_override))
+                        else:
+                            # clamp components to their max values and treat None as 0
+                            quiz = 0 if quiz is None else max(0, min(5, quiz))
+                            mid = 0 if mid is None else max(0, min(25, mid))
+                            assignment = 0 if assignment is None else max(0, min(20, assignment))
+                            final = 0 if final is None else max(0, min(50, final))
+                            total = quiz + mid + assignment + final
+
+                    # Clamp total 0-100
+                    if total < 0:
+                        total = 0
+                    if total > 100:
+                        total = 100
+
                     try:
-                        grade_obj.remarks = result_val
+                        grade_obj, created = Grade.objects.get_or_create(
+                            student=enrollment.student,
+                            subject=subject,
+                            defaults={'score': total, 'quiz_score': quiz if quiz is not None else None, 'mid_score': mid if mid is not None else None, 'assignment_score': assignment if assignment is not None else None, 'final_exam_score': final if final is not None else None}
+                        )
+                    except OperationalError:
+                        messages.error(request, 'Database tables for the `ranks` app are missing. Please run `python manage.py migrate`.')
+                        return redirect(request.path + f'?subject_id={subject.id}')
+
+                    if not created:
+                        grade_obj.score = total
+                        # update component fields if provided
+                        if quiz is not None:
+                            grade_obj.quiz_score = quiz
+                        if mid is not None:
+                            grade_obj.mid_score = mid
+                        if assignment is not None:
+                            grade_obj.assignment_score = assignment
+                        if final is not None:
+                            grade_obj.final_exam_score = final
                         grade_obj.save()
-                    except Exception:
-                        pass
-                    try:
-                        enrollment.result = result_val
-                        enrollment.save()
-                    except Exception:
-                        pass
-                updated += 1
+
+                    # store remarks/result if provided
+                    result_val = request.POST.get(f'result_{enrollment.student.id}')
+                    if result_val is not None:
+                        try:
+                            grade_obj.remarks = result_val
+                            grade_obj.save()
+                        except Exception:
+                            pass
+                        try:
+                            enrollment.result = result_val
+                            enrollment.save()
+                        except Exception:
+                            pass
+                    updated += 1
 
             messages.success(request, f'Scores updated for {updated} students.')
             return redirect(request.path + f'?subject_id={subject.id}')
@@ -442,7 +579,7 @@ def enter_grades(request):
 
 @teacher_required
 def class_rosters(request):
-    teacher_subjects = Subject.objects.filter(instructor__user=request.user, is_active=True, assigned_by_registrar=True)
+    teacher_subjects = Subject.objects.filter(instructor__user=request.user, is_active=True)
     selected_subject_id = request.GET.get('subject_id')
     
     if selected_subject_id:
@@ -467,7 +604,7 @@ def class_rosters(request):
 
 @teacher_required
 def performance_reports(request):
-    teacher_subjects = Subject.objects.filter(instructor__user=request.user, is_active=True, assigned_by_registrar=True)
+    teacher_subjects = Subject.objects.filter(instructor__user=request.user, is_active=True)
     selected_subject_id = request.GET.get('subject_id')
     
     if selected_subject_id:
@@ -478,8 +615,9 @@ def performance_reports(request):
         academic_year = request.GET.get('academic_year') or _get_current_academic_year()
         semester = request.GET.get('semester') or _get_current_semester()
         try:
-            # Grades may be stored per subject; filter by enrollments for term if necessary
-            grades = Grade.objects.filter(subject=subject).select_related('student')
+            # Restrict grades to students actually enrolled in this subject for the selected term
+            student_ids = Enrollment.objects.filter(subject=subject, academic_year=academic_year, semester=semester, status__in=['approved', 'active']).values_list('student_id', flat=True)
+            grades = Grade.objects.filter(subject=subject, student__id__in=student_ids).select_related('student')
         except OperationalError:
             messages.error(request, 'Database tables for the `ranks` app are missing. Please run `python manage.py migrate`.')
             grades = []
@@ -569,9 +707,8 @@ def view_student_performance(request, student_id):
     semester = request.GET.get('semester') or _get_current_semester()
     student_courses = Subject.objects.filter(
         instructor__user=request.user,
-        assigned_by_registrar=True,
         enrollments__student=student,
-        enrollments__status='approved',
+        enrollments__status__in=['approved', 'active'],
         enrollments__academic_year=academic_year,
         enrollments__semester=semester,
     ).distinct()
@@ -691,7 +828,12 @@ def save_student_score(request):
     """
     student_id = request.POST.get('student_id')
     subject_id = request.POST.get('subject_id')
+    # support component fields
     score = request.POST.get('score')
+    quiz = request.POST.get('quiz')
+    mid = request.POST.get('mid')
+    assignment = request.POST.get('assignment')
+    final_exam = request.POST.get('final_exam')
     result = request.POST.get('result')
 
     if not (student_id and subject_id):
@@ -714,15 +856,47 @@ def save_student_score(request):
 
     # validate and store score
     parsed_score = None
-    if score is not None and score != '':
+    # component parsing
+    def parse_int(v, default=None):
+        if v is None or v == '':
+            return default
         try:
-            parsed_score = int(float(score))
-        except ValueError:
-            return JsonResponse({'success': False, 'message': 'Invalid score'}, status=400)
-        if parsed_score < 0:
-            parsed_score = 0
-        if parsed_score > 100:
-            parsed_score = 100
+            return int(float(v))
+        except Exception:
+            return default
+
+    parsed_quiz = parse_int(quiz)
+    parsed_mid = parse_int(mid)
+    parsed_assignment = parse_int(assignment)
+    parsed_final = parse_int(final_exam)
+    # support override average (manual edit from UI)
+    override_avg = request.POST.get('override_avg')
+    try:
+        parsed_override = int(float(override_avg)) if override_avg not in (None, '') else None
+    except Exception:
+        parsed_override = None
+
+    if any(x is not None for x in [parsed_quiz, parsed_mid, parsed_assignment, parsed_final]):
+        # clamp components
+        parsed_quiz = 0 if parsed_quiz is None else max(0, min(5, parsed_quiz))
+        parsed_mid = 0 if parsed_mid is None else max(0, min(25, parsed_mid))
+        parsed_assignment = 0 if parsed_assignment is None else max(0, min(20, parsed_assignment))
+        parsed_final = 0 if parsed_final is None else max(0, min(50, parsed_final))
+        parsed_score = parsed_quiz + parsed_mid + parsed_assignment + parsed_final
+        parsed_score = max(0, min(100, parsed_score))
+        # if teacher provided an override average, use it instead
+        if parsed_override is not None:
+            parsed_score = max(0, min(100, parsed_override))
+    else:
+        if score is not None and score != '':
+            try:
+                parsed_score = int(float(score))
+            except ValueError:
+                return JsonResponse({'success': False, 'message': 'Invalid score'}, status=400)
+            if parsed_score < 0:
+                parsed_score = 0
+            if parsed_score > 100:
+                parsed_score = 100
 
     # Create or update Grade (ranks.models.Grade)
     try:
@@ -730,8 +904,14 @@ def save_student_score(request):
     except Exception:
         return JsonResponse({'success': False, 'message': 'Database error creating grade'}, status=500)
 
+    # Only overwrite score if a score was provided or computed; otherwise keep existing score
     if not created:
+        if parsed_score is not None:
+            grade_obj.score = parsed_score
+    else:
+        # created: ensure score field set (may be None)
         grade_obj.score = parsed_score
+
     if result is not None:
         grade_obj.remarks = result
     grade_obj.save()

@@ -11,7 +11,13 @@ class Grade(models.Model):
     """
     student = models.ForeignKey(User, on_delete=models.CASCADE, limit_choices_to={'role': 'student'})
     subject = models.ForeignKey(Subject, on_delete=models.CASCADE)
+    # overall numeric score (0-100)
     score = models.PositiveIntegerField(null=True, blank=True, help_text='Numeric score out of 100')
+    # component scores (new fields) - note: migrations required after this change
+    quiz_score = models.PositiveIntegerField(null=True, blank=True, help_text='Quiz score (max 5)')
+    mid_score = models.PositiveIntegerField(null=True, blank=True, help_text='Midterm score (max 25)')
+    assignment_score = models.PositiveIntegerField(null=True, blank=True, help_text='Assignment score (max 20)')
+    final_exam_score = models.PositiveIntegerField(null=True, blank=True, help_text='Final exam score (max 50)')
     remarks = models.TextField(blank=True)
     graded_at = models.DateTimeField(auto_now_add=True)
 
