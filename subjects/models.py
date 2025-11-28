@@ -74,6 +74,8 @@ class Subject(models.Model):
         blank=True, 
         related_name='subjects'
     )
+    # Mark whether this subject was assigned to the instructor by the registrar
+    assigned_by_registrar = models.BooleanField(default=False)
     
     max_capacity = models.IntegerField(default=30)
     is_active = models.BooleanField(default=True)
