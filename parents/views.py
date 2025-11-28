@@ -235,30 +235,47 @@ def child_ranks(request, student_id):
     
     
     try:
-        ranks = Grade.objects.filter(student=child).select_related('subject').order_by('subject__code')
+        grades_qs = Grade.objects.filter(student=child).select_related('subject').order_by('subject__code')
     except OperationalError:
         from django.contrib import messages
         messages.error(request, 'Database tables for the `ranks` app are missing. Please run `python manage.py migrate`.')
-        ranks = []
-    
-    # Calculate GPA for this child (using numeric scores)
-    total_credits = 0
-    total_points = 0
-    for rank in ranks:
-        if rank.score is not None and rank.credits:
-            # convert to grade point if rank.grade exists, else use numeric score mapping
-            grade_point = get_grade_point(getattr(rank, 'grade', None)) if getattr(rank, 'grade', None) else (rank.score / 25.0)
-            total_credits += rank.credits
-            total_points += grade_point * rank.credits
-    
-    gpa = total_points / total_credits if total_credits > 0 else 0
-    
+        grades_qs = []
+
+    # Build subject results list (numeric scores)
+    subject_results = []
+    for g in grades_qs:
+        subject_results.append({'subject': g.subject, 'score': g.score})
+
+    # Compute weighted average (numeric) using ranks.calculate_student_average
+    from ranks.models import calculate_student_average, rank_students_for_subject
+    avg = calculate_student_average(child)
+
+    # Compute class rank among students in same grade (if available)
+    class_rank = None
+    try:
+        if hasattr(child, 'studentprofile') and child.studentprofile.grade_level:
+            grade_level = child.studentprofile.grade_level
+            peers = User.objects.filter(role='student', studentprofile__grade_level=grade_level)
+            peer_averages = []
+            for peer in peers:
+                peer_avg = calculate_student_average(peer)
+                if peer_avg is not None:
+                    peer_averages.append((peer.id, peer_avg))
+            # sort descending
+            peer_averages.sort(key=lambda x: x[1], reverse=True)
+            for idx, (peer_id, pa) in enumerate(peer_averages, start=1):
+                if peer_id == child.id:
+                    class_rank = idx
+                    break
+    except Exception:
+        class_rank = None
+
     context = {
         'child': child,
         'relationship': child_link.relationship,
-        'ranks': ranks,
-        'gpa': round(gpa, 2),
-        'total_credits': total_credits,
+        'subject_results': subject_results,
+        'average': round(avg, 2) if avg is not None else None,
+        'class_rank': class_rank,
     }
     return render(request, 'parents/child_ranks.html', context)
     

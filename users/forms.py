@@ -3,6 +3,7 @@ from django.contrib.auth.forms import UserCreationForm, AuthenticationForm
 from django.utils import timezone
 from .models import User, StudentProfile, TeacherProfile, ParentProfile, StudentParent, RegistrarProfile, FinanceProfile
 import re
+import datetime
 
 class UserRegistrationForm(UserCreationForm):
     email = forms.EmailField(required=True, widget=forms.EmailInput(attrs={'class': 'form-control', 'placeholder': 'Enter your email'}))
@@ -19,12 +20,21 @@ class UserRegistrationForm(UserCreationForm):
         help_text="Required for students",
         widget=forms.Select(attrs={'class': 'form-control role-specific', 'id': 'id_grade_level'})
     )
-    academic_year = forms.CharField(
-        max_length=9,
+    def _build_academic_year_choices():
+        now = datetime.datetime.now()
+        choices = []
+        # generate a small range of academic years around current
+        start = now.year - 2
+        for y in range(start, start + 6):
+            choices.append((f"{y}-{y+1}", f"{y}-{y+1}"))
+        return choices
+
+    academic_year = forms.ChoiceField(
+        choices=_build_academic_year_choices(),
         required=False,
-        initial='2024-2025',
-        help_text="Required for students (Format: YYYY-YYYY)",
-        widget=forms.TextInput(attrs={'class': 'form-control role-specific', 'placeholder': 'e.g., 2024-2025', 'id': 'id_academic_year'})
+        initial=None,
+        help_text="Required for students (select academic year)",
+        widget=forms.Select(attrs={'class': 'form-control role-specific', 'id': 'id_academic_year'})
     )
     current_semester = forms.ChoiceField(
         choices=StudentProfile.SEMESTER_CHOICES,
@@ -218,11 +228,20 @@ class AdminUserCreationForm(UserCreationForm):
         required=False,
         widget=forms.Select(attrs={'class': 'form-control', 'id': 'id_grade_level'})
     )
-    academic_year = forms.CharField(
-        max_length=9,
+    # academic_year should be selectable based on standard academic calendar
+    def _build_admin_academic_year_choices():
+        now = datetime.datetime.now()
+        choices = []
+        start = now.year - 2
+        for y in range(start, start + 6):
+            choices.append((f"{y}-{y+1}", f"{y}-{y+1}"))
+        return choices
+
+    academic_year = forms.ChoiceField(
+        choices=_build_admin_academic_year_choices(),
         required=False,
-        initial='2024-2025',
-        widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 2024-2025'})
+        initial=None,
+        widget=forms.Select(attrs={'class': 'form-control', 'id': 'id_academic_year'})
     )
     current_semester = forms.ChoiceField(
         choices=StudentProfile.SEMESTER_CHOICES,

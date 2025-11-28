@@ -13,5 +13,6 @@ urlpatterns = [
     path('claim-subject/<int:subject_id>/', views.claim_subject, name='claim_subject'),
     path('subject-statistics/<int:subject_id>/', views.get_subject_statistics, name='get_subject_statistics'),
     path('assign-subjects/', views.assign_subjects_for_term, name='assign_subjects_for_term'),
+    path('assign-selected-subjects/', views.assign_selected_subjects, name='assign_selected_subjects'),
     path('save-score/', views.save_student_score, name='save_student_score'),
 ]

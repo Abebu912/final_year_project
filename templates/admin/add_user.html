@@ -129,6 +129,15 @@
                                                 {% endif %}
                                             </div>
                                         </div>
+                                        <div class="col-md-6">
+                                            <div class="mb-3">
+                                                <label for="{{ form.current_semester.id_for_label }}" class="form-label">Current Semester *</label>
+                                                {{ form.current_semester }}
+                                                {% if form.current_semester.help_text %}
+                                                    <div class="form-text">{{ form.current_semester.help_text }}</div>
+                                                {% endif %}
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             </div>

@@ -315,12 +315,11 @@ def get_current_academic_year():
 
 def get_current_semester():
     now = datetime.datetime.now()
-    if 1 <= now.month <= 5:
-        return "second"  # Spring semester
-    elif 6 <= now.month <= 7:
-        return "summer"  # Summer semester
+    # Simplify semester mapping to the two-semester model (first/second)
+    if now.month >= 8:
+        return 'first'  # Fall semester
     else:
-        return "first"  # Fall semester
+        return 'second'  # Spring/remaining months treated as second
 
 
 def enroll_student_in_default_subjects(student_user, grade_level, academic_year=None, semester=None, status='pending'):

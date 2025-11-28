@@ -51,23 +51,50 @@
   </div>
   
   <h4 class="mt-4">Available Subjects to Claim</h4>
-  <div class="list-group mb-3">
-    {% for c in available_subjects %}
-      <div class="list-group-item d-flex justify-content-between align-items-center">
-        <div>
-          <strong>{{ c.code }}</strong> - {{ c.name }}
-          <div class="text-muted small">Students: {{ c.student_count|default:0 }}</div>
-        </div>
-        <div>
-          <form method="post" action="{% url 'claim_subject' c.id %}" class="d-inline">
-            {% csrf_token %}
-            <button type="submit" class="btn btn-sm btn-outline-primary">Claim</button>
-          </form>
-        </div>
+  <div class="card mb-3 p-3">
+    <form method="get" class="row g-2 mb-2">
+      <div class="col-auto">
+        <input type="number" name="grade_level" class="form-control" placeholder="Grade level" min="1" max="12" value="{{ filter_grade_level }}">
       </div>
-    {% empty %}
-      <div class="list-group-item">No unassigned subjects available.</div>
-    {% endfor %}
+      <div class="col-auto">
+        <input type="text" name="academic_year" class="form-control" placeholder="Academic year (e.g. 2025-2026)" value="{{ filter_academic_year }}">
+      </div>
+      <div class="col-auto">
+        <select name="semester" class="form-select">
+          <option value="">-- Semester --</option>
+          <option value="first" {% if filter_semester == 'first' %}selected{% endif %}>First</option>
+          <option value="second" {% if filter_semester == 'second' %}selected{% endif %}>Second</option>
+        </select>
+      </div>
+      <div class="col-auto">
+        <button type="submit" class="btn btn-sm btn-outline-secondary">Filter</button>
+      </div>
+    </form>
+
+    <form method="post" action="{% url 'assign_selected_subjects' %}">
+      {% csrf_token %}
+      <input type="hidden" name="academic_year" value="{{ filter_academic_year }}">
+      <input type="hidden" name="semester" value="{{ filter_semester }}">
+      <div class="list-group mb-3">
+        {% for c in available_subjects %}
+          <label class="list-group-item d-flex justify-content-between align-items-center">
+            <div>
+              <input type="checkbox" name="subject_ids" value="{{ c.id }}" class="form-check-input me-2">
+              <strong>{{ c.code }}</strong> - {{ c.name }}
+              <div class="text-muted small">Students: {{ c.student_count|default:0 }}</div>
+            </div>
+            <div>
+              <a href="{% url 'class_rosters' %}?subject_id={{ c.id }}" class="btn btn-sm btn-outline-secondary me-1">View</a>
+            </div>
+          </label>
+        {% empty %}
+          <div class="list-group-item">No unassigned subjects available for the selected filters.</div>
+        {% endfor %}
+      </div>
+      <div>
+        <button type="submit" class="btn btn-sm btn-success">Assign Selected Subjects</button>
+      </div>
+    </form>
   </div>
 
   <h4 class="mt-4">Students Overview</h4>
